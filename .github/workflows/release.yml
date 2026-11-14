@@ -1,0 +1,131 @@
+name: Desktop release
+
+on:
+    push:
+        tags:
+            - 'v*'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: desktop-release-${{ github.ref }}
+
+jobs:
+    verify:
+        runs-on: ubuntu-latest
+        env:
+            HUSKY: '0'
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: '24'
+            - if: github.event_name == 'push'
+              name: Validate version and extract release notes
+              shell: bash
+              run: |
+                  version=$(node -p "require('./apps/desktop/package.json').version")
+                  if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || "$GITHUB_REF_NAME" != "v$version" ]]; then
+                      echo "::error::The tag must be vMAJOR.MINOR.PATCH and match apps/desktop/package.json."
+                      exit 1
+                  fi
+
+                  awk -v version="$version" '
+                      /^## / { if (found) exit; found = ($2 == "[" version "]"); next }
+                      found { print }
+                  ' CHANGELOG.md > release-notes.md
+                  if ! grep -q '[^[:space:]]' release-notes.md; then
+                      echo "::error::Add release notes under ## [$version] in CHANGELOG.md."
+                      exit 1
+                  fi
+            - if: github.event_name == 'push'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-notes
+                  path: release-notes.md
+                  if-no-files-found: error
+            - uses: pnpm/action-setup@v6
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm typecheck
+            - run: pnpm lint
+            - run: pnpm test
+
+    package:
+        needs: verify
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: macos-15
+                      artifact: macos-arm64
+                      target: --mac --arm64
+                      assets: |
+                          apps/desktop/release/*.dmg
+                          apps/desktop/release/*.zip
+                          apps/desktop/release/*.blockmap
+                          apps/desktop/release/latest-mac.yml
+                    - runner: windows-2025
+                      artifact: windows-x64
+                      target: --win --x64
+                      assets: |
+                          apps/desktop/release/*.exe
+                          apps/desktop/release/*.blockmap
+                          apps/desktop/release/latest.yml
+        runs-on: ${{ matrix.runner }}
+        env:
+            HUSKY: '0'
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: '24'
+            - uses: pnpm/action-setup@v6
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm --filter @zhuixun/backend bundle
+            - run: pnpm --filter @zhuixun/desktop build
+            - run: pnpm --filter @zhuixun/desktop exec electron-builder ${{ matrix.target }} --publish never
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: desktop-${{ matrix.artifact }}
+                  path: ${{ matrix.assets }}
+                  if-no-files-found: error
+
+    release:
+        if: github.event_name == 'push'
+        needs: package
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/download-artifact@v5
+              with:
+                  name: release-notes
+            - uses: actions/download-artifact@v5
+              with:
+                  pattern: desktop-*
+                  path: assets
+                  merge-multiple: true
+            - name: Create GitHub Release draft
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+              run: |
+                  # 确保两个平台的安装包与更新描述齐全，再创建 Release。
+                  shopt -s failglob
+                  version="${GITHUB_REF_NAME#v}"
+                  test -s assets/latest.yml
+                  test -s assets/latest-mac.yml
+                  test -s "assets/ZhuiXun-Setup-$version.exe"
+                  test -s "assets/ZhuiXun-Setup-$version.exe.blockmap"
+                  test -s "assets/ZhuiXun-$version-portable.exe"
+                  printf '%s\n' assets/*.dmg assets/*.zip
+
+                  gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+                      --title "追寻 $GITHUB_REF_NAME" --notes-file release-notes.md assets/*

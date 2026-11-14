@@ -1,0 +1,11 @@
+{
+    "name": "just-bash",
+    "version": "3.4.2",
+    "private": true,
+    "type": "module",
+    "description": "本项目内的 just-bash 空替身：只用于让 bash-tool 的静态 import 能解析。真实能力由 LocalShellSandbox 提供。",
+    "main": "./index.js",
+    "exports": {
+        ".": "./index.js"
+    }
+}

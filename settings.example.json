@@ -1,0 +1,20 @@
+{
+    "model": {
+        "providers": [
+            {
+                "name": "openai",
+                "kind": "openai",
+                "apiKey": "sk-your-api-key-here",
+                "models": ["gpt-4"]
+            }
+        ],
+        "activeModel": "openai/gpt-4"
+    },
+    "env": {
+        "PORT": "31001",
+        "LOG_FORMAT": "pretty"
+    },
+    "app": {
+        "defaultAgentMode": "routed"
+    }
+}

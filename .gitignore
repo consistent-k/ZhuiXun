@@ -1,0 +1,42 @@
+# Dependencies and package-manager artifacts
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+dist-electron/
+release/
+coverage/
+*.tsbuildinfo
+
+# Runtime secrets and local configuration
+.env
+.env.*
+!.env.example
+.mcp.json
+settings.json
+
+# Logs and local reports
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# electron-builder brand assets are source files and must remain tracked.
+# Without this exception packaging falls back to the default Electron icon.
+!apps/desktop/build/
+!apps/desktop/build/**
+
+# Local task scheduler state
+.claude/scheduled_tasks.lock
+
+# Local design and debugging notes
+/docs/

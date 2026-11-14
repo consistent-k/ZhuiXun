@@ -1,0 +1,66 @@
+{
+    "name": "@zhuixun/workspace",
+    "private": true,
+    "version": "2.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "pnpm start",
+        "dev:backend": "pnpm --filter @zhuixun/backend dev",
+        "dev:desktop": "pnpm --filter @zhuixun/desktop dev",
+        "dev:web": "pnpm --filter @zhuixun/desktop dev:web",
+        "start": "pnpm --filter @zhuixun/backend bundle && concurrently -k \"pnpm --filter @zhuixun/backend bundle:watch\" \"pnpm dev:desktop\"",
+        "build": "pnpm -r build",
+        "package": "pnpm --filter @zhuixun/backend bundle && pnpm --filter @zhuixun/desktop package",
+        "package:mac": "pnpm --filter @zhuixun/backend bundle && pnpm --filter @zhuixun/desktop package:mac",
+        "package:mac:universal": "pnpm --filter @zhuixun/backend bundle && pnpm --filter @zhuixun/desktop package:mac:universal",
+        "package:win": "pnpm --filter @zhuixun/backend bundle && pnpm --filter @zhuixun/desktop package:win",
+        "package:all": "pnpm --filter @zhuixun/backend bundle && pnpm --filter @zhuixun/desktop package:all",
+        "lint": "eslint .",
+        "lint:fix": "eslint . --fix",
+        "typecheck": "pnpm -r typecheck",
+        "test": "pnpm --filter @zhuixun/backend test",
+        "test:unit": "pnpm --filter @zhuixun/backend test:unit",
+        "test:integration": "pnpm --filter @zhuixun/backend test:integration",
+        "test:http": "pnpm --filter @zhuixun/backend test:http",
+        "test:contract": "pnpm --filter @zhuixun/backend test:contract",
+        "test:coverage": "pnpm --filter @zhuixun/backend test:coverage",
+        "test:typecheck": "pnpm --filter @zhuixun/backend typecheck:test",
+        "channels:install-plugins": "node apps/backend/scripts/install-channel-plugins.mjs",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "commit": "git-cz",
+        "prepare": "husky",
+        "dev:cli": "pnpm --filter @zhuixun/cli build && pnpm --filter @zhuixun/cli start"
+    },
+    "config": {
+        "commitizen": {
+            "path": "./node_modules/cz-conventional-changelog"
+        }
+    },
+    "packageManager": "pnpm@12.21.0",
+    "engines": {
+        "node": ">=24",
+        "pnpm": ">=12"
+    },
+    "devDependencies": {
+        "@commitlint/cli": "^21.2.4",
+        "@commitlint/config-conventional": "^21.2.4",
+        "@eslint/js": "^10.0.1",
+        "commitizen": "^4.3.2",
+        "concurrently": "^10.0.7",
+        "cz-conventional-changelog": "^3.3.0",
+        "eslint": "^10.15.0",
+        "eslint-plugin-compat": "^7.0.2",
+        "eslint-plugin-import-x": "^4.18.1",
+        "eslint-plugin-prettier": "^5.5.7",
+        "eslint-plugin-react-hooks": "^7.1.1",
+        "eslint-plugin-react-refresh": "^0.5.7",
+        "eslint-plugin-unused-imports": "^4.4.1",
+        "globals": "^17.14.0",
+        "husky": "^9.1.7",
+        "lint-staged": "^17.6.0",
+        "prettier": "^3.10.1",
+        "typescript": "~6.0.2",
+        "typescript-eslint": "^8.72.2"
+    }
+}

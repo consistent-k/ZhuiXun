@@ -1,0 +1,9 @@
+{
+    "mcpServers": {
+        "local-tools": {
+            "transport": "stdio",
+            "command": "node",
+            "args": ["/absolute/path/to/mcp-server/dist/index.js"]
+        }
+    }
+}

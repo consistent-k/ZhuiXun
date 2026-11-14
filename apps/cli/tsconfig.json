@@ -1,0 +1,8 @@
+{
+    "extends": "../backend/tsconfig.json",
+    "compilerOptions": {
+        "jsx": "react-jsx",
+        "paths": { "@zhuixun/shared": ["../../packages/shared/src/index.ts"] }
+    },
+    "include": ["src/**/*"]
+}

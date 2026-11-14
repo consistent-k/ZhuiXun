@@ -1,0 +1,96 @@
+# electron-builder 打包配置。
+# 产线：mac → dmg(+zip，供 electron-updater 读取 feed)，Windows → nsis；跨平台签名出包走 CI matrix。
+# 自动更新：经 electron-updater + GitHub 公有库 feed（见下方 publish）。
+#   - 两端暂无代码签名：Windows 应用内全自动更新；macOS 仅检测新版，命中后跳 release 页手动装
+#     (Squirrel.Mac 无签名不能应用内安装)。拿到 Apple Developer ID 后再切 mac 全自动。
+appId: com.zhuixun.app
+productName: 追寻
+copyright: 追寻
+# GitHub 更新包统一使用 ASCII 文件名，与 Release 附件校验一致。
+artifactName: ZhuiXun-${version}-${arch}.${ext}
+
+directories:
+    # 图标等打包资源（build/icon.icns、build/icon.ico）
+    buildResources: build
+    # 安装包产物输出目录
+    output: release
+
+# 打进 app.asar 的文件：渲染进程产物(dist) + Electron 主进程/preload(dist-electron) + 本包清单
+files:
+    - dist/**
+    - dist-electron/**
+    - package.json
+
+# 随包但不进 asar 的资源：后端编译产物(apps/backend/dist/server.js) → resources/backend/
+# 主进程以 process.resourcesPath/backend/server.js 定位并在进程内 import 起后端。
+extraResources:
+    - from: ../backend/dist
+      to: backend
+      filter:
+          - '**/*'
+
+# npx 类 MCP server 的随包 npm（可选，提升 Finder 启动场景健壮性）：
+# 若需彻底不依赖本机 node/npx，再补一个 beforePack 钩子把 npm 拷到 resources/backend/npm，
+# 配合 manager.ts 的 ELECTRON_RUN_AS_NODE 使用。当前默认回落本机 PATH 里的 npx。
+
+# afterPack 钩子：把宿主平台的 ripgrep 二进制拷进 resources/rg/（后端 bundle external 了 @vscode/ripgrep，
+# 打包形态需随包分发 rg），运行时由 electron/main.ts 经 ZHUIXUN_RG_PATH 指定。
+afterPack: scripts/after-pack.cjs
+
+mac:
+    target:
+        - dmg
+        - zip
+    category: public.app-category.productivity
+    icon: build/icon.icns
+    # 没有 Developer ID 也必须显式做 ad-hoc 签名（"-"）。
+    # electron-builder 在找不到证书时默认直接跳过签名，产物会保留 Electron 自带的二进制签名：
+    # `Identifier=Electron`、`Info.plist=not bound`。这种签名与 appId 不匹配，macOS 会拒绝应用
+    # 申请通知授权（UserNotifications 失败 UNErrorDomain 1），表现就是「没有任何系统通知」。
+    # 显式 ad-hoc 签名后 CodeDirectory 的 Identifier 即为 com.zhuixun.app，通知可正常送达。
+    identity: '-'
+
+win:
+    target:
+        - nsis
+        - portable
+    icon: build/icon.ico
+    extraResources:
+        - from: build/icon.ico
+          to: icon.ico
+
+nsis:
+    # 固定 GitHub Release 资产名，确保更新描述和实际上传文件使用同一名称。
+    artifactName: ZhuiXun-Setup-${version}.exe
+    oneClick: false
+    allowToChangeInstallationDirectory: true
+    # 安装器/卸载器/标题栏统一用品牌图标(buildResources 下 build/icon.ico)。
+    installerIcon: build/icon.ico
+    uninstallerIcon: build/icon.ico
+    installerHeaderIcon: build/icon.ico
+    # 生成桌面 + 开始菜单快捷方式(单应用不嵌套公司子目录，放开始菜单顶层)。
+    createDesktopShortcut: true
+    createStartMenuShortcut: true
+    menuCategory: false
+    shortcutName: 追寻
+    # 卸载走「设置→应用→已安装的应用」或「控制面板→程序和功能」，此为其中显示名；
+    # 安装目录下也会生成「Uninstall 追寻.exe」。(electron-builder 不在开始菜单建卸载快捷方式)
+    uninstallDisplayName: 追寻 ${version}
+    # 当前用户安装(无需管理员)；如需全机器安装改为 true(会要求 UAC 提权)。
+    perMachine: false
+    # 卸载时保留 %APPDATA% 下的用户数据(用户偏好/会话/技能在 ~/.zhuixun，本就不在此)；
+    # 如需彻底清理可改 true。
+    deleteAppDataOnUninstall: false
+
+# 免安装(portable)版：产出单文件可执行 exe，双击即运行、无需安装、不写注册表。
+# 注意：portable 版「不会」出现在「应用和功能」里，也没有卸载程序——删除 exe 即卸载。
+# 要走正常安装/卸载流程，请用 nsis 产物「ZhuiXun-Setup-<版本>.exe」。
+portable:
+    artifactName: ZhuiXun-${version}-portable.exe
+
+# 自动更新 feed：GitHub 公有库(免 token)。owner/repo 必须与 electron/update-channels.ts 的常量一致。
+# CI 用 electron-builder 生成更新描述，由发布 job 统一上传到对应的 GitHub Release。
+publish:
+    provider: github
+    owner: consistent-k
+    repo: zhuixun-agent
