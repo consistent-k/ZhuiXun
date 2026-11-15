@@ -1,6 +1,6 @@
 import { stripVTControlCharacters } from 'node:util';
 
-import { Text, useStdout } from 'ink';
+import { Text, useWindowSize } from 'ink';
 import type { Token, Tokens } from 'marked';
 import React, { useMemo } from 'react';
 import stringWidth from 'string-width';
@@ -119,9 +119,9 @@ interface Props {
 }
 
 export function MarkdownTable({ token }: Props): React.ReactNode {
-    const { stdout } = useStdout();
+    // Ink 的 stdout 类型允许普通 WritableStream，终端列数应通过窗口尺寸 hook 读取。
+    const { columns: terminalWidth } = useWindowSize();
     const { theme } = useTheme();
-    const terminalWidth = stdout?.columns ?? 80;
     const themeColors = useMemo(
         () => ({ accent: theme.accent, textDim: theme.textDim }),
         [theme.accent, theme.textDim]
