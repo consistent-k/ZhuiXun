@@ -5,7 +5,13 @@
     "schedule": ["before 12pm on friday"],
     "prConcurrentLimit": 10,
     "automerge": false,
+    "platformAutomerge": false,
+    "ignoreTests": false,
     "packageRules": [
+        {
+            "matchUpdateTypes": ["patch", "minor"],
+            "automerge": true
+        },
         {
             "matchPackageNames": ["typescript", "@types/node"],
             "groupName": "typescript"
