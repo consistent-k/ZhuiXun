@@ -345,13 +345,9 @@ function renderAssistantParts(
             return;
         }
 
-        // work：单个工具保持单卡语义，≥2 才聚合成组
         hasVisibleContent = true;
-        if (node.items.length === 1) {
-            rendered.push(<TimelineToolItem key={node.key} item={node.items[0]} />);
-        } else {
-            rendered.push(<ActivityGroup key={node.key} items={node.items} />);
-        }
+        // 首个工具出现时就挂载分组，流式追加第二个工具时保留用户的展开态。
+        rendered.push(<ActivityGroup key={node.key} items={node.items} />);
     });
 
     if (streaming) {

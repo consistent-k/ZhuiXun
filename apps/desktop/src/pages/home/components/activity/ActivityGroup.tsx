@@ -1,5 +1,7 @@
 import { DownOutlined, ToolOutlined, WarningFilled } from '@ant-design/icons';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
+
+import { ChatScrollContext } from '../chat-scroll-context';
 
 import useStyles from './ActivityGroup/styles';
 import { formatDuration } from './format';
@@ -17,14 +19,13 @@ function countsText(summary: ReturnType<typeof summarizeWork>): string {
 /**
  * 连续工具调用的聚合组。
  *
- * - 运行中/待确认/失败/拒绝：自动展开，组头给出当前正在执行的工具摘要；
- * - 全部成功：自动收起，只留一行「已执行 N 个操作」；
- * - 用户手动展开/收起后，不再被自动策略覆盖（open 为 null 时才跟随 autoOpen）。
+ * 默认显示组头摘要，待审批的工具在折叠时也保留操作入口。
  */
 export const ActivityGroup = memo(function ActivityGroup({ items }: ActivityGroupProps) {
     const { styles, cx } = useStyles();
+    const { stopScroll } = useContext(ChatScrollContext);
     const summary = useMemo(() => summarizeWork(items), [items]);
-    const [open, setOpen] = useState<boolean | null>(null);
+    const [expanded, setExpanded] = useState(false);
     const activeSinceRef = useRef<number | null>(null);
     const accumulatedRef = useRef(0);
     const [durationMs, setDurationMs] = useState<number | null>(null);
@@ -45,9 +46,10 @@ export const ActivityGroup = memo(function ActivityGroup({ items }: ActivityGrou
         }
     }, [anyRunning, summary.allSettled]);
 
-    const autoOpen = summary.attention || !summary.allSettled;
-    const expanded = open ?? autoOpen;
-    const label = summary.allSettled ? `已执行 ${items.length} 个操作` : `正在执行 ${items.length} 个操作`;
+    const pendingItems = items.filter((item) => item.status === 'waiting-approval');
+    const visibleItems = expanded ? items : pendingItems;
+    const statusLabel = summary.allSettled ? '已执行' : summary.running ? '正在执行' : '等待审批';
+    const label = `${statusLabel} ${items.length} 个操作`;
     const counts = countsText(summary);
 
     return (
@@ -56,7 +58,10 @@ export const ActivityGroup = memo(function ActivityGroup({ items }: ActivityGrou
                 type="button"
                 className="activity-group-header"
                 aria-expanded={expanded}
-                onClick={() => setOpen(!expanded)}
+                onClick={() => {
+                    stopScroll();
+                    setExpanded(!expanded);
+                }}
             >
                 <ToolOutlined className="activity-group-icon" />
                 <span className="activity-group-label">{label}</span>
@@ -78,9 +83,9 @@ export const ActivityGroup = memo(function ActivityGroup({ items }: ActivityGrou
                 )}
                 <DownOutlined className={cx('activity-group-chevron', expanded && 'is-expanded')} />
             </button>
-            {expanded && (
+            {visibleItems.length > 0 && (
                 <div className="activity-group-body">
-                    {items.map((item) => (
+                    {visibleItems.map((item) => (
                         <TimelineToolItem key={item.toolCallId} item={item} />
                     ))}
                 </div>

@@ -170,7 +170,7 @@ function toStoredMessages(messages: UIMessage[]): StoredMessage[] {
 }
 
 /** 取最新一条用户消息的纯文本（供记忆召回按当前问题挑相关条目）。 */
-function extractLatestUserText(messages: UIMessage[]): string | undefined {
+function extractLatestUserText(messages: UIMessage[], latestOnly = false): string | undefined {
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
         if (msg.role !== 'user') continue;
@@ -180,7 +180,7 @@ function extractLatestUserText(messages: UIMessage[]): string | undefined {
             .map((p) => p.text ?? '')
             .join('')
             .trim();
-        if (text) return text;
+        if (text || latestOnly) return text || undefined;
     }
     return undefined;
 }
@@ -543,6 +543,15 @@ export async function runChatTurn(
 
                 // ---------- streaming ----------
                 machine.to('streaming');
+                const runtime = {
+                    loopGuard,
+                    hooks,
+                    approvalMode,
+                    // 只审查本轮用户原文。无文本的请求不会沿用上一轮的授权，slash 展开也不算授权。
+                    approvalRequest:
+                        approvalMode === 'auto-review' ? extractLatestUserText(uiMessages, true) : undefined,
+                    signal
+                };
                 const agent =
                     agentMode === 'progressive'
                         ? await createProgressiveAgent(
@@ -558,7 +567,7 @@ export async function runChatTurn(
                               latestUserText,
                               turnId,
                               personaId,
-                              { loopGuard, hooks, ...(approvalMode ? { approvalMode } : {}) }
+                              runtime
                           )
                         : await createRoutedAgent(
                               registry,
@@ -571,7 +580,7 @@ export async function runChatTurn(
                               latestUserText,
                               turnId,
                               personaId,
-                              { loopGuard, hooks, ...(approvalMode ? { approvalMode } : {}) }
+                              runtime
                           );
 
                 // 首输出前错误恢复链（重试复用同一 agent 实例）：

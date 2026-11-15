@@ -18,7 +18,14 @@ export async function resolveMacDevLauncher(): Promise<string> {
     const sourcePlist = path.join(sourceBundle, 'Contents/Info.plist');
     const iconPath = path.join(desktopDir, 'build/icon.icns');
     const [plist, icon] = await Promise.all([readFile(sourcePlist), readFile(iconPath)]);
-    const cacheKey = createHash('sha256').update(plist).update(icon).update(appName).update(bundleId).digest('hex');
+    // 旧版 launcher 写入绝对路径，项目移动后需重新生成。
+    const cacheKey = createHash('sha256')
+        .update(plist)
+        .update(icon)
+        .update(appName)
+        .update(bundleId)
+        .update('relative-launcher-v1')
+        .digest('hex');
     const cache = path.join(desktopDir, 'node_modules/.cache/zhuixun-electron');
     const target = path.join(cache, cacheKey);
     const launcher = path.join(target, 'launcher.cjs');
@@ -49,8 +56,11 @@ export async function resolveMacDevLauncher(): Promise<string> {
         await run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle]);
 
         // 保留 Electron 可执行文件名，使默认应用仍按开发态加载传入的工作目录。
-        const executable = path.join(target, `${appName}.app/Contents/MacOS`, path.basename(electron));
-        await writeFile(path.join(staging, 'launcher.cjs'), `module.exports = ${JSON.stringify(executable)};\n`);
+        const executable = path.join(`${appName}.app/Contents/MacOS`, path.basename(electron));
+        await writeFile(
+            path.join(staging, 'launcher.cjs'),
+            `module.exports = require('node:path').join(__dirname, ${JSON.stringify(executable)});\n`
+        );
         try {
             await rename(staging, target);
         } catch (error) {

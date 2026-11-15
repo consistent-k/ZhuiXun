@@ -1,5 +1,5 @@
 import type { ApprovalMode } from '@zhuixun/shared';
-import type { ToolApprovalStatus } from 'ai';
+import type { ModelMessage, ToolApprovalStatus } from 'ai';
 
 import type { HookVerdict, ToolHookRunner } from './hook-wrapper';
 
@@ -39,6 +39,7 @@ export interface ApprovalPipelineOptions {
     danger: boolean;
     mode?: ApprovalMode;
     review?: (call: ApprovalToolCall) => Promise<boolean>;
+    reviewAction?: (call: ApprovalToolCall, messages?: ModelMessage[]) => Promise<ToolApprovalStatus>;
     onDecision?: (call: ApprovalToolCall, source: string, status: ToolApprovalStatus) => void;
     /** 不参与策略 / hook 的工具（如 client 交互工具，审批会让它无法工作）。 */
     exempt?: ReadonlySet<string>;
@@ -50,7 +51,10 @@ export interface ApprovalToolCall {
     input: unknown;
 }
 
-export type ToolApprovalFn = (options: { toolCall: ApprovalToolCall }) => Promise<ToolApprovalStatus>;
+export type ToolApprovalFn = (options: {
+    toolCall: ApprovalToolCall;
+    messages?: ModelMessage[];
+}) => Promise<ToolApprovalStatus>;
 
 const NO_UI_SUFFIX = '（当前场景没有确认界面，已自动拒绝）';
 
@@ -77,7 +81,7 @@ export function createApprovalPipeline(opts: ApprovalPipelineOptions): ToolAppro
         }
     };
 
-    const decide = async (call: ApprovalToolCall): Promise<ToolApprovalStatus> => {
+    const decide = async (call: ApprovalToolCall, messages?: ModelMessage[]): Promise<ToolApprovalStatus> => {
         const { toolName, input } = call;
         const report = (source: string, status: ToolApprovalStatus) => {
             opts.onDecision?.(call, source, status);
@@ -125,6 +129,10 @@ export function createApprovalPipeline(opts: ApprovalPipelineOptions): ToolAppro
             if (opts.mode === 'auto-review' && (await opts.review?.(call))) {
                 return report('project-edit-review', { type: 'approved', reason: '目标为已核验的可信项目内文件' });
             }
+            if (opts.mode === 'auto-review' && !opts.writeDenylisted?.(toolName, input)) {
+                const decision = await opts.reviewAction?.(call, messages);
+                if (decision && statusType(decision) !== 'not-applicable') return report('action-review', decision);
+            }
             return report('broker', status);
         }
         if (!opts.hasUi && statusType(status) === 'user-approval') {
@@ -133,9 +141,9 @@ export function createApprovalPipeline(opts: ApprovalPipelineOptions): ToolAppro
         return status;
     };
 
-    return async ({ toolCall }) => {
+    return async ({ toolCall, messages }) => {
         try {
-            return await decide(toolCall);
+            return await decide(toolCall, messages);
         } catch (error) {
             // 任何判定异常都不 fail-open：有 UI 时交给用户确认，否则拒绝
             const message = error instanceof Error ? error.message : String(error);

@@ -8,7 +8,7 @@ import { desktopApprovalBridge } from '@/utils/request';
 
 const modes: { key: ApprovalMode; label: string; description: string }[] = [
     { key: 'ask', label: '请求批准', description: '需要授权时询问你' },
-    { key: 'auto-review', label: '帮我批准', description: '自动批准可核验的可信项目内编辑' },
+    { key: 'auto-review', label: '帮我批准', description: '根据当前任务审查命令，符合授权时自动执行' },
     { key: 'full-access', label: '完全访问权限', description: '跳过可跳过的工具审批' }
 ];
 

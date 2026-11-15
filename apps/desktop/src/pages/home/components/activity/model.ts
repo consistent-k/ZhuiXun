@@ -4,7 +4,7 @@ import { getToolName, isToolUIPart, type FileUIPart, type ReasoningUIPart, type 
  * Agent 活动流视图模型：把 AI SDK 的 `UIMessage.parts` 转成可渲染的 `TimelineNode[]`。
  *
  * 这里只做纯函数派生，不改消息、不新增 store：
- * - 连续工具 part 聚合成一个 `work` 节点（≥2 时渲染成组，单个仍渲染单卡）；
+ * - 连续工具 part 跨 SDK 步骤聚合成一个 `work` 节点；
  * - 思考 / 正文 / 附件是硬边界，遇到即断开当前工具组；
  * - askUserQuestion 与任务清单保持独立节点，不参与折叠。
  */
@@ -223,10 +223,8 @@ export function buildTimeline(parts: UIMessage['parts']): TimelineNode[] {
     };
 
     parts.forEach((part, index) => {
-        if (part.type === 'step-start') {
-            flush();
-            return;
-        }
+        // SDK 每步可能只调用一个工具，步骤标记没有可见内容，不应把连续工具拆成单卡。
+        if (part.type === 'step-start') return;
         if (part.type === 'text') {
             if (!part.text) return;
             flush();

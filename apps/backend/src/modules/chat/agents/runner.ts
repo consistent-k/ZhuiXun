@@ -24,6 +24,7 @@ import {
 import { createLoopGuard, type LoopGuard } from '@/agent/loop/guard';
 import { composePrepareStep, type PrepareStepPart } from '@/agent/loop/prepare-step';
 import { createModel, markLastMessageForCache, toInstructions, usesExplicitPromptCache } from '@/agent/model/provider';
+import { createActionReview } from '@/agent/tools/action-review';
 import { createApprovalPipeline, type ToolApprovalFn } from '@/agent/tools/approval-pipeline';
 import { createAutomationTools } from '@/agent/tools/automation-tools';
 import { resolveAllowedTools } from '@/agent/tools/binding';
@@ -125,6 +126,7 @@ const APPROVAL_EXEMPT_TOOLS: ReadonlySet<string> = new Set(['askUserQuestion']);
 export interface ToolApprovalOptions {
     approvalMode?: ApprovalMode;
     review?: (call: { toolName: string; toolCallId?: string; input: unknown }) => Promise<boolean>;
+    reviewAction?: Parameters<typeof createApprovalPipeline>[0]['reviewAction'];
     /** 是否有确认 UI：主对话有；子 agent / IM 渠道没有，策略 ask 与需确认的调用一律拒绝。 */
     hasUi?: boolean;
     /** 本轮 MCP 工具的运行时名集合，供 `MCP(glob)` 规则识别（引用可在构造后继续补充）。 */
@@ -190,6 +192,7 @@ export function buildToolApproval(
         danger,
         mode,
         review: opts.review,
+        reviewAction: opts.reviewAction,
         onDecision: mode
             ? ({ toolName }, source, status) => {
                   const decision = typeof status === 'string' ? status : status?.type;
@@ -249,6 +252,8 @@ export function createTurnFlags(): TurnFlags {
 /** 单轮运行期选项：由 chat service 创建并持有，以便流结束后读取停止原因。 */
 export interface AgentRuntimeOptions {
     approvalMode?: ApprovalMode;
+    approvalRequest?: string;
+    signal?: AbortSignal;
     /** 工具循环护栏；缺省时按应用设置新建（仍会显式设置 stopWhen）。 */
     loopGuard?: LoopGuard;
     /** Hooks 运行器（PreToolUse 进审批管线，PostToolUse 包装工具 execute）；缺省不执行 hooks。 */
@@ -366,6 +371,22 @@ function bindProjectEditReview(shellTools: ToolSet, root?: string): ToolApproval
         reviewed.set(toolCallId, { toolName, fingerprint });
         return true;
     };
+}
+
+function bindActionReview(
+    model: ReturnType<typeof createModel>,
+    workspace?: AgentWorkspace,
+    runtime?: AgentRuntimeOptions
+): ToolApprovalOptions['reviewAction'] {
+    if (runtime?.approvalMode !== 'auto-review' || !runtime.approvalRequest) return;
+    const review = createActionReview({
+        model,
+        request: runtime.approvalRequest,
+        cwd: workspace?.primaryDir ?? WORKSPACE_DIR,
+        signal: runtime.signal
+    });
+    // Bash 是常规权限确认项。显式策略和 hook 的确认仍由管线处理，项目写入继续核验文件身份。
+    return (call, messages) => (call.toolName === 'Bash' ? review(call, messages) : Promise.resolve(undefined));
 }
 
 /** 默认工作区模式下技能副本所在目录（与 createShellTools 的 cwd 一致）；项目模式不 seed 技能，返回 undefined。 */
@@ -591,7 +612,8 @@ export async function createRoutedAgent(
                 mcpToolNames: new Set(mcpToolNames),
                 hooks: runtime?.hooks,
                 approvalMode: runtime?.approvalMode,
-                review
+                review,
+                reviewAction: bindActionReview(model, workspace, runtime)
             })
         )
     });
@@ -866,7 +888,8 @@ export async function createProgressiveAgent(
                 mcpToolNames: new Set(Object.keys(deferredMcpTools)),
                 hooks: runtime?.hooks,
                 approvalMode: runtime?.approvalMode,
-                review
+                review,
+                reviewAction: bindActionReview(model, workspace, runtime)
             })
         )
     });
