@@ -470,14 +470,14 @@ export async function runChatTurn(
         // 请求起始先落一次（含本轮 user 消息），刷新时能看到用户气泡。
         // 普通消息的起始写入由会话存储队列排序。交互续跑先消费待处理状态，再执行工具。
         if (canResume) {
-            const initialSave = persistTurn(
+            // 压缩提交会校验已落库的历史，先等当前轮消息写入再读取检查点。
+            await persistTurn(
                 store,
                 chatId,
                 uiMessages,
                 { projectId, roots: sourceRoots, personaId, approvalTurn },
                 continuing
             );
-            if (latest?.role === 'assistant') await initialSave;
         }
 
         // 首轮标题与主回答流并发生成，不阻塞流式。
@@ -510,6 +510,7 @@ export async function runChatTurn(
             execute: async ({ writer }) => {
                 let streamMessages = modelMessages;
                 let compactionMarker: CompactionMarker | undefined;
+                let compactionUsageScope: string | undefined;
 
                 // ---------- compacting ----------
                 machine.to('compacting');
@@ -520,6 +521,7 @@ export async function runChatTurn(
                             sessionId: chatId,
                             messages: modelMessages,
                             model: config,
+                            signal,
                             onCompacting: () =>
                                 writer.write({
                                     type: 'data-compaction',
@@ -529,6 +531,7 @@ export async function runChatTurn(
                         });
                         streamMessages = outcome.modelInput;
                         compactionMarker = outcome.marker;
+                        compactionUsageScope = outcome.usageScope;
                     } catch (err) {
                         log.warn('上下文压缩失败（忽略，使用全量历史）', { err });
                     }
@@ -591,20 +594,25 @@ export async function runChatTurn(
                     handlers.push(
                         createOverflowHandler(async (options) => {
                             try {
-                                const outcome = await reactiveCompactContext({
-                                    store,
-                                    sessionId: chatId,
-                                    messages: modelMessages,
-                                    model: config,
-                                    onCompacting: () =>
-                                        writer.write({
-                                            type: 'data-compaction',
-                                            data: { phase: 'start' },
-                                            transient: true
-                                        })
-                                });
+                                const outcome = await reactiveCompactContext(
+                                    {
+                                        store,
+                                        sessionId: chatId,
+                                        messages: modelMessages,
+                                        model: config,
+                                        signal,
+                                        onCompacting: () =>
+                                            writer.write({
+                                                type: 'data-compaction',
+                                                data: { phase: 'start' },
+                                                transient: true
+                                            })
+                                    },
+                                    streamMessages
+                                );
                                 if (!outcome.changed) return null;
                                 streamMessages = outcome.modelInput;
+                                compactionUsageScope = outcome.usageScope;
                                 if (outcome.marker) {
                                     compactionMarker = outcome.marker;
                                     writer.write({
@@ -671,6 +679,7 @@ export async function runChatTurn(
                             }
                             return {
                                 usage: toUsageMetadata(lastStepUsage ?? part.totalUsage),
+                                ...(compactionUsageScope ? { compactionUsageScope } : {}),
                                 ...(aiTitle ? { title: aiTitle } : {}),
                                 ...(compactionMarker ? { compaction: compactionMarker } : {}),
                                 ...(stopReason ? { stopReason, steps: loopGuard.state.steps } : {})

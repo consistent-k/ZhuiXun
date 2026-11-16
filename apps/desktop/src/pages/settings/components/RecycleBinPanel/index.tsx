@@ -1,6 +1,6 @@
 import { ReloadOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Empty, List, Popconfirm, Spin } from 'antd';
+import { App, Button, Empty, Flex, Listy, Popconfirm, Space, Spin, Typography } from 'antd';
 
 import { SUCCESS_CODE } from '@/constant/code';
 import { fetchProjectsApi } from '@/services';
@@ -49,17 +49,25 @@ export function RecycleBinPanel() {
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                     />
                 ) : (
-                    <List
+                    <Listy
                         className="settings-page-recycle-list"
-                        dataSource={deleted}
-                        renderItem={(p) => (
-                            <List.Item
-                                actions={[
-                                    <Button key="restore" type="link" onClick={() => handleRestore(p.id)}>
+                        items={deleted}
+                        rowKey="id"
+                        rowHoverable={false}
+                        styles={{ item: { paddingInline: 0 } }}
+                        itemRender={(p) => (
+                            <Flex justify="space-between" align="center" gap="small">
+                                <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                                    <div>{p.name}</div>
+                                    <Typography.Text type="secondary">
+                                        {p.roots?.length ? `${p.roots.length} 个工作目录` : '无工作目录'}
+                                    </Typography.Text>
+                                </div>
+                                <Space size="small" style={{ flexShrink: 0 }}>
+                                    <Button type="link" onClick={() => handleRestore(p.id)}>
                                         恢复
-                                    </Button>,
+                                    </Button>
                                     <Popconfirm
-                                        key="hard"
                                         title="彻底删除该项目？"
                                         description="将连同项目指令与项目记忆一并永久删除，不可恢复。其会话已在删除时移到未分组、不受影响。"
                                         okText="彻底删除"
@@ -70,13 +78,8 @@ export function RecycleBinPanel() {
                                             彻底删除
                                         </Button>
                                     </Popconfirm>
-                                ]}
-                            >
-                                <List.Item.Meta
-                                    title={p.name}
-                                    description={p.roots?.length ? `${p.roots.length} 个工作目录` : '无工作目录'}
-                                />
-                            </List.Item>
+                                </Space>
+                            </Flex>
                         )}
                     />
                 )}

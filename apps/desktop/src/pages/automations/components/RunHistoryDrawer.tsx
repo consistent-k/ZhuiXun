@@ -113,7 +113,7 @@ export default function RunHistoryDrawer({ automation, onClose }: RunHistoryDraw
             title={automation ? `运行历史 · ${automation.title}` : '运行历史'}
             open={!!automation}
             onClose={onClose}
-            width={640}
+            size={640}
         >
             {runs.length === 0 && !loading ? (
                 <Empty description="暂无运行记录" />

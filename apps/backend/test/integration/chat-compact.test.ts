@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 
 describe('compactConversation (/compact)', () => {
-    it('forces compaction with instructions and marks the last assistant message separately from auto markers', async () => {
+    it('passes the exact history snapshot and manual instructions to compaction', async () => {
         await seed('compact-ok');
         f.force.mockResolvedValue({ changed: true, marker, modelInput: [] });
         await expect(compactConversation('compact-ok', '保留方案结论')).resolves.toEqual({
@@ -47,7 +47,7 @@ describe('compactConversation (/compact)', () => {
         expect(params.messages[0].parts).toEqual([{ type: 'text', text: '问' }]);
         expect(params.messages[1].metadata).toEqual({ usage: { totalTokens: 9 } });
         const saved = await getConversationStore().get('compact-ok');
-        expect(saved?.messages.at(-1)?.metadata).toEqual({ compaction: marker, manualCompaction: marker });
+        expect(params.snapshot).toEqual(saved);
         expect(saved?.messages).toHaveLength(4);
     });
 
@@ -60,12 +60,10 @@ describe('compactConversation (/compact)', () => {
         await expect(compactConversation('compact-user-only')).resolves.toEqual({ changed: true, marker });
     });
 
-    it('keeps the checkpoint result when the marker write fails', async () => {
-        await seed('compact-write-fail');
-        f.force.mockResolvedValue({ changed: true, marker, modelInput: [] });
-        const spy = vi.spyOn(getConversationStore(), 'appendMessages').mockRejectedValueOnce(new Error('disk'));
-        await expect(compactConversation('compact-write-fail')).resolves.toMatchObject({ changed: true });
-        spy.mockRestore();
+    it('returns a conflict if the history changed while generating the summary', async () => {
+        await seed('compact-conflict');
+        f.force.mockResolvedValue({ changed: false, conflict: true, modelInput: [] });
+        await expect(compactConversation('compact-conflict')).rejects.toMatchObject({ status: 409 });
     });
 
     it('rejects invalid ids, missing conversations, missing model and active streams', async () => {

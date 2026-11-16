@@ -43,7 +43,7 @@ describe('generateConversationTitle', () => {
         expect(boundaries.createModel).toHaveBeenCalledExactlyOnceWith(model);
         expect(boundaries.generateText).toHaveBeenCalledExactlyOnceWith({
             model: languageModel,
-            instructions: expect.stringContaining('只概括其主题生成标题'),
+            instructions: expect.stringContaining('你是什么模型 → 询问模型身份'),
             prompt: '用户提问：如何解读检验结果？',
             maxOutputTokens: 512,
             temperature: 0.3

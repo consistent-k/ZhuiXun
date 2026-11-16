@@ -43,14 +43,14 @@ describe('compaction policy', () => {
         });
         expect(resolveCompactionPolicy(model, -100).compactThreshold).toBe(1790);
         expect(resolveCompactionPolicy(model, 50.6).compactThreshold).toBe(91_290);
-        expect(resolveCompactionPolicy({ ...model, contextWindow: 30_000 }, 80).compactThreshold).toBe(0);
+        expect(resolveCompactionPolicy({ ...model, contextWindow: 30_000 }, 80).compactThreshold).toBe(18_000);
         expect(resolveCompactionPolicy({ ...model, contextWindow: 10_000 }, 80)).toMatchObject({
-            outputReserveTokens: 10_000,
-            effectiveContextWindow: 0,
-            compactThreshold: 0,
-            microcompactThreshold: 0
+            outputReserveTokens: 2_500,
+            effectiveContextWindow: 7_500,
+            compactThreshold: 6_000,
+            microcompactThreshold: 4_000
         });
-        expect(resolveCompactionPolicy({ ...model, contextWindow: 36_000 }, 80).microcompactThreshold).toBe(0);
+        expect(resolveCompactionPolicy({ ...model, contextWindow: 36_000 }, 80).microcompactThreshold).toBe(19_440);
     });
 });
 

@@ -4,7 +4,7 @@
  * 关键口径（对齐 ZCode 的 auto compact policy）：
  * - provider 的 contextWindow 是「输入 + 输出」共享窗口，压缩只能让出输入侧，所以阈值分母必须先扣掉
  *   模型的输出预留（最多 21k），否则长回答会踩线。
- * - 再留 13k buffer，避免估算误差/多模态开销导致刚好超窗。
+ * - 再按窗口比例留最多 13k buffer，避免估算误差/多模态开销导致刚好超窗。
  * - 用户设置的是百分比（50~95），最终阈值取「百分比阈值」与「有效窗口 - buffer」的较小值，
  *   既保留用户“早压/晚压”的控制，又永远不越过安全线。
  *
@@ -57,11 +57,13 @@ export interface CompactionPolicy {
  */
 export function resolveCompactionPolicy(model: ResolvedModel, thresholdPercent: number): CompactionPolicy {
     const contextWindow = positiveInt(model.contextWindow) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-    const outputReserveTokens = Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, contextWindow);
+    const outputReserveTokens = Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(contextWindow * 0.25));
     const effectiveContextWindow = Math.max(0, contextWindow - outputReserveTokens);
     const percent = Math.min(100, Math.max(1, Math.round(thresholdPercent)));
     const percentThreshold = Math.floor((effectiveContextWindow * percent) / 100);
-    const safeThreshold = Math.max(0, effectiveContextWindow - COMPACTION_BUFFER_TOKENS);
+    // 小窗口按比例留余量，避免固定预留把触发阈值压到零。
+    const buffer = Math.min(COMPACTION_BUFFER_TOKENS, Math.floor(effectiveContextWindow * 0.2));
+    const safeThreshold = effectiveContextWindow - buffer;
     const compactThreshold = Math.min(percentThreshold, safeThreshold);
     const microcompactThreshold = Math.max(
         0,

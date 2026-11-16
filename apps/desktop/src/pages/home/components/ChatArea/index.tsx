@@ -49,7 +49,7 @@ interface ChatAreaProps {
 }
 
 /**
- * 会话区外壳：标题栏 + 报错条 + 消息滚动区 + 任务面板 + 输入框。
+ * 会话区外壳：标题栏（含实时任务进度）+ 报错条 + 消息滚动区 + 输入框。
  *
  * 流式相关的状态与动作全部经 `ChatSession` 的 Context 取得，不再作为 props 透传：
  * 这里的运行态只在 status / error 变化时更新，标题栏的 Select、输入框不随 token 重渲染。
@@ -111,6 +111,9 @@ export function ChatArea({
                     {title}
                 </span>
                 <div className="chat-area-actions">
+                    {!messagesLoading && (loading || pendingInteractionCount > 0) && (
+                        <TaskPanel key={conversationKey} />
+                    )}
                     {showPersonaSelect && (
                         <div className="chat-area-persona">
                             <SlidersOutlined aria-hidden />
@@ -166,7 +169,6 @@ export function ChatArea({
                     <ChatTranscript conversationKey={conversationKey} messagesLoading={messagesLoading} />
                     <ApprovalDock />
                     <div className="chat-area-composer">
-                        <TaskPanel />
                         <GoalBanner />
                         <InputBox
                             onSend={handleSend}

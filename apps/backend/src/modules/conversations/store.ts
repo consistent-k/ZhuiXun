@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
-import type { ApprovalMode } from '@zhuixun/shared';
+import type { ApprovalMode, CompactionMarker } from '@zhuixun/shared';
 import dayjs from 'dayjs';
 
 import { validateQuestionMessages } from '@/agent/tools/question-validation';
@@ -156,7 +157,14 @@ export interface IConversationService {
     updatePersonaId(id: string, personaId: string | null): Promise<ConversationMeta | null>;
     updateTitle(id: string, title: string, opts?: { auto?: boolean }): Promise<ConversationMeta | null>;
     truncateFrom(id: string, messageId: string): Promise<ConversationMeta | null>;
-    updateCompaction(id: string, checkpoint: CompactionCheckpoint): Promise<void>;
+    updateCompaction(
+        id: string,
+        checkpoint: CompactionCheckpoint,
+        commit?: {
+            expected: Pick<SavedConversation, 'messages' | 'compaction'>;
+            manualMarker?: CompactionMarker;
+        }
+    ): Promise<boolean>;
     handleProjectRemoval(projectId: string, cascade: boolean): Promise<string[]>;
     delete(id: string): Promise<void>;
     clear(): Promise<number>;
@@ -615,15 +623,39 @@ export class ConversationStore {
 
     /**
      * 写入/更新会话的上下文压缩检查点（轻量：只改单文件的 compaction 字段，不动 messages、不改索引、不改 updatedAt——
-     * 压缩是内部重建状态，不应把会话顶到侧栏最前）。会话不存在（如全新会话首轮尚未落库）时静默跳过。
+     * 压缩是内部重建状态，不应把会话顶到侧栏最前）。比较摘要开始时的历史和检查点，防止较慢的摘要覆盖较新的状态。
      */
-    async updateCompaction(id: string, checkpoint: CompactionCheckpoint): Promise<void> {
-        if (!isValidConversationId(id)) return;
-        await this.enqueue(async () => {
+    async updateCompaction(
+        id: string,
+        checkpoint: CompactionCheckpoint,
+        commit?: Parameters<IConversationService['updateCompaction']>[2]
+    ): Promise<boolean> {
+        if (!isValidConversationId(id)) return false;
+        return this.enqueue(async () => {
             const conv = await this.get(id);
-            if (!conv) return;
+            if (!conv) return false;
+            if (commit) {
+                const { expected, manualMarker } = commit;
+                if (
+                    !isDeepStrictEqual(conv.compaction, expected.compaction) ||
+                    !isDeepStrictEqual(conv.messages, expected.messages) ||
+                    !conv.messages.some(
+                        (message) => message.id === checkpoint.boundaryMessageId && message.role === 'user'
+                    )
+                ) {
+                    return false;
+                }
+                // 标记和检查点一次提交，避免回滚后因单独追加标记而把已删除的消息写回来。
+                const target =
+                    manualMarker && [...conv.messages].reverse().find((message) => message.role === 'assistant');
+                if (target) {
+                    const metadata = target.metadata && typeof target.metadata === 'object' ? target.metadata : {};
+                    target.metadata = { ...metadata, manualCompaction: manualMarker };
+                }
+            }
             conv.compaction = checkpoint;
             await this.writeFileAtomic(this.conversationPath(id), JSON.stringify(conv, null, 2));
+            return true;
         });
     }
 

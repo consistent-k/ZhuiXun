@@ -8,6 +8,8 @@
  *
  * 判阈与跨轮压缩共用 policy，使用同一套 CJK 感知估算，避免两套口径漂移。
  */
+import { isDeepStrictEqual } from 'node:util';
+
 import { pruneMessages, type ModelMessage } from 'ai';
 
 import { getAppSettings } from '@/config/settings-store';
@@ -56,7 +58,8 @@ export function createStepCompactor(model: ResolvedModel) {
                 toolCalls: 'before-last-2-messages',
                 emptyMessages: 'remove'
             });
-            if (pruned.length === messages.length) return undefined; // 没有可删内容，避免无谓重置
+            // SDK 会删掉同一条消息内的推理或工具 part，消息条数可能保持不变。
+            if (isDeepStrictEqual(pruned, messages)) return undefined;
             log.info('轮内上下文压缩（pruneMessages）', { before: messages.length, after: pruned.length });
             return { messages: pruned };
         } catch (err) {

@@ -1,6 +1,6 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Empty, Form, Input, List, Popconfirm, Select, Spin, Tag } from 'antd';
+import { App, Button, Empty, Flex, Form, Input, Listy, Popconfirm, Select, Space, Spin, Tag, Typography } from 'antd';
 import { useState } from 'react';
 
 import Modal from '@/components/Modal';
@@ -123,34 +123,40 @@ export function MemoryItems({ scope, projectId }: MemoryItemsProps) {
             ) : items.length === 0 ? (
                 <Empty className="memory-items-empty" description="暂无记忆，点击「新建记忆」添加" />
             ) : (
-                <List
+                <Listy
                     className="memory-items-list"
-                    dataSource={items}
-                    renderItem={(it) => (
-                        <List.Item
-                            actions={[
+                    items={items}
+                    rowKey="name"
+                    rowHoverable={false}
+                    styles={{ item: { paddingInline: 0 } }}
+                    itemRender={(it) => (
+                        <Flex justify="space-between" align="center" gap="small">
+                            <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                                <div>
+                                    {it.name}
+                                    {it.type && <Tag className="memory-items-tag">{TYPE_LABEL[it.type]}</Tag>}
+                                </div>
+                                <Typography.Text type="secondary">{it.description || '（无描述）'}</Typography.Text>
+                            </div>
+                            <Space size="small" style={{ flexShrink: 0 }}>
                                 <Button
-                                    key="e"
                                     type="text"
                                     size="small"
                                     icon={<EditOutlined />}
+                                    aria-label="编辑记忆"
                                     onClick={() => openEdit(it)}
-                                />,
-                                <Popconfirm key="d" title="删除这条记忆？" onConfirm={() => handleDelete(it.name)}>
-                                    <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                                />
+                                <Popconfirm title="删除这条记忆？" onConfirm={() => handleDelete(it.name)}>
+                                    <Button
+                                        type="text"
+                                        size="small"
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        aria-label="删除记忆"
+                                    />
                                 </Popconfirm>
-                            ]}
-                        >
-                            <List.Item.Meta
-                                title={
-                                    <span>
-                                        {it.name}
-                                        {it.type && <Tag className="memory-items-tag">{TYPE_LABEL[it.type]}</Tag>}
-                                    </span>
-                                }
-                                description={it.description || '（无描述）'}
-                            />
-                        </List.Item>
+                            </Space>
+                        </Flex>
                     )}
                 />
             )}

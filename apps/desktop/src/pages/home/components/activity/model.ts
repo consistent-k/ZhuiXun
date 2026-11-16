@@ -56,7 +56,7 @@ export const ASK_USER_QUESTION_TOOL = 'askUserQuestion';
 export const TASK_TOOLS: ReadonlySet<string> = new Set(['TaskCreate', 'TaskUpdate', 'TaskList']);
 
 /**
- * 内联任务卡片精简策略：常驻 TaskPanel 已承载「当前」清单，会话流里只保留有独立价值的两类：
+ * 内联任务卡片精简策略：标题栏 TaskPanel 已承载「当前」清单，会话流里只保留有独立价值的两类：
  * - TaskCreate：初始计划成形，值得在时间线留痕；
  * - 失败更新（output-error 或 execute 回软错误 ok:false，如被阻塞/成环）：面板不展示失败，需在此可见。
  */

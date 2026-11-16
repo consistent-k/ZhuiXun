@@ -120,6 +120,23 @@ describe('in-turn compaction with real SDK pruneMessages', () => {
         ).toBeUndefined();
     });
 
+    it('keeps pruning that removes reasoning parts without changing the message count', () => {
+        const messages: ModelMessage[] = [
+            { role: 'user', content: 'question' },
+            {
+                role: 'assistant',
+                content: [
+                    { type: 'reasoning', text: '字'.repeat(70_000) },
+                    { type: 'text', text: 'answer' }
+                ]
+            }
+        ];
+        expect(createStepCompactor(model)({ messages, steps: [] })?.messages).toEqual([
+            messages[0],
+            { role: 'assistant', content: [{ type: 'text', text: 'answer' }] }
+        ]);
+    });
+
     it('falls back rather than crashing when incoming message shape makes the SDK prune fail', () => {
         const malformed = [{ role: 'assistant', content: null }] as unknown as ModelMessage[];
         expect(

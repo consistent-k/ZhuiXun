@@ -69,7 +69,7 @@ describe('ConversationStore persistence', () => {
         await expect(store.updateTitle('../escape', 'title')).resolves.toBeNull();
         await expect(store.updateProjectId('../escape', null)).resolves.toBeNull();
         await expect(store.truncateFrom('../escape', 'm')).resolves.toBeNull();
-        await expect(store.updateCompaction('../escape', checkpoint)).resolves.toBeUndefined();
+        await expect(store.updateCompaction('../escape', checkpoint)).resolves.toBe(false);
         await expect(store.delete('../escape')).resolves.toBeUndefined();
         await expect(store.exportOne('missing')).resolves.toBeNull();
     });
@@ -175,12 +175,33 @@ describe('ConversationStore persistence', () => {
         await store.updateCompaction('s', checkpoint);
         await expect(store.get('s')).resolves.toMatchObject({ updatedAt: before!.updatedAt, compaction: checkpoint });
         expect(await fs.readFile(path.join(temp.sessions, 'index.json'), 'utf8')).toBe(indexBefore);
-        await expect(store.updateCompaction('missing', checkpoint)).resolves.toBeUndefined();
+        await expect(store.updateCompaction('missing', checkpoint)).resolves.toBe(false);
         await expect(store.truncateFrom('missing', 'm1')).resolves.toBeNull();
         await expect(store.truncateFrom('s', 'missing')).resolves.toBeNull();
         await expect(store.truncateFrom('s', 'm2')).resolves.toMatchObject({ id: 's' });
         expect((await store.get('s'))?.messages.map((m) => m.id)).toEqual(['m1']);
         expect((await store.readHistory()).at(-1)).toMatchObject({ event: 'save', messageCount: 1 });
+    });
+
+    it('commits a manual marker with the checkpoint and rejects stale checkpoints and rewound history', async () => {
+        const id = 'compact-race';
+        const marker = { summarizedCount: 2, keptCount: 2, tokensBefore: 100, tokensAfter: 20 };
+        await store.appendMessages(id, [
+            message('u1'),
+            { ...message('a1'), role: 'assistant' },
+            message('u2'),
+            { ...message('a2'), role: 'assistant', metadata: { compaction: marker } }
+        ]);
+        const expected = (await store.get(id))!;
+        const next = { ...checkpoint, boundaryMessageId: 'u2' };
+        await expect(store.updateCompaction(id, next, { expected, manualMarker: marker })).resolves.toBe(true);
+        const saved = (await store.get(id))!;
+        expect(saved.compaction).toEqual(next);
+        expect(saved.messages.at(-1)?.metadata).toEqual({ compaction: marker, manualCompaction: marker });
+        await expect(store.updateCompaction(id, { ...next, summary: 'stale' }, { expected })).resolves.toBe(false);
+        await store.truncateFrom(id, 'a2');
+        await expect(store.updateCompaction(id, next, { expected: saved, manualMarker: marker })).resolves.toBe(false);
+        expect((await store.get(id))?.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2']);
     });
 
     it('rebuilds a missing or syntactically corrupt index and isolates corrupt files', async () => {

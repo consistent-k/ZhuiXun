@@ -1,5 +1,5 @@
 import { App, DatePicker, Form, Input, InputNumber, Select, Space, TimePicker } from 'antd';
-import { useEffect } from 'react';
+import { useId } from 'react';
 
 import Modal from '@/components/Modal';
 import type { AutomationKind, AutomationSchedule, AutomationView } from '@/types/automation';
@@ -28,7 +28,6 @@ interface FormValues {
     weekdays?: number[];
     cronExpr?: string;
     timeZone?: string;
-    enabled: boolean;
 }
 
 const KIND_OPTIONS: { value: AutomationKind; label: string }[] = [
@@ -99,28 +98,35 @@ function formToSchedule(v: FormValues): AutomationSchedule {
 }
 
 export default function AutomationEditModal({ open, editing, onCancel, onSubmit }: AutomationEditModalProps) {
+    const formId = useId();
+
+    return (
+        <Modal
+            title={editing ? '编辑自动化任务' : '新建自动化任务'}
+            open={open}
+            onCancel={onCancel}
+            okButtonProps={{ htmlType: 'submit', form: formId }}
+            width={560}
+        >
+            <AutomationForm id={formId} editing={editing} onSubmit={onSubmit} />
+        </Modal>
+    );
+}
+
+function AutomationForm({
+    id,
+    editing,
+    onSubmit
+}: Pick<AutomationEditModalProps, 'editing' | 'onSubmit'> & { id: string }) {
     const { message } = App.useApp();
     const [form] = Form.useForm<FormValues>();
     const kind = Form.useWatch('kind', form);
+    // Form 与弹窗内容一起挂载，字段在 StrictMode 重新注册时也能从初始值恢复。
+    const initialValues: Partial<FormValues> = editing
+        ? { title: editing.title, prompt: editing.prompt, ...scheduleToForm(editing.schedule) }
+        : { kind: 'daily', everyUnit: 'minute', everyValue: 30 };
 
-    // 打开时回填：编辑态用已有任务，新建态给默认值
-    useEffect(() => {
-        if (!open) return;
-        if (editing) {
-            form.setFieldsValue({
-                title: editing.title,
-                prompt: editing.prompt,
-                enabled: editing.enabled,
-                ...scheduleToForm(editing.schedule)
-            });
-        } else {
-            form.resetFields();
-            form.setFieldsValue({ kind: 'daily', enabled: true, everyUnit: 'minute', everyValue: 30 });
-        }
-    }, [open, editing, form]);
-
-    const handleOk = async () => {
-        const v = await form.validateFields();
+    const handleFinish = (v: FormValues) => {
         if (v.kind === 'cron') {
             const err = validateCron(v.cronExpr ?? '');
             if (err) {
@@ -132,99 +138,98 @@ export default function AutomationEditModal({ open, editing, onCancel, onSubmit 
             message.error('请至少选择一个星期');
             return;
         }
-        onSubmit({ title: v.title.trim(), prompt: v.prompt.trim(), schedule: formToSchedule(v), enabled: v.enabled });
+        onSubmit({
+            title: v.title.trim(),
+            prompt: v.prompt.trim(),
+            schedule: formToSchedule(v),
+            enabled: editing?.enabled ?? true
+        });
     };
 
     return (
-        <Modal
-            title={editing ? '编辑自动化任务' : '新建自动化任务'}
-            open={open}
-            onOk={() => void handleOk()}
-            onCancel={onCancel}
-            destroyOnHidden
-            width={560}
+        <Form
+            id={id}
+            form={form}
+            layout="vertical"
+            preserve={false}
+            initialValues={initialValues}
+            onFinish={handleFinish}
         >
-            <Form form={form} layout="vertical" preserve={false}>
-                <Form.Item name="title" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
-                    <Input placeholder="如：每天早晨汇总今日日程" maxLength={120} />
-                </Form.Item>
-                <Form.Item
-                    name="prompt"
-                    label="执行指令（到点回灌给 AI 的 prompt）"
-                    rules={[{ required: true, message: '请输入执行指令' }]}
-                >
-                    <Input.TextArea rows={4} placeholder="到点时自动发给 AI 的内容" />
-                </Form.Item>
-                <Form.Item name="kind" label="触发方式" rules={[{ required: true }]}>
-                    <Select options={KIND_OPTIONS} />
-                </Form.Item>
+            <Form.Item name="title" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
+                <Input placeholder="如：每天早晨汇总今日日程" maxLength={120} />
+            </Form.Item>
+            <Form.Item
+                name="prompt"
+                label="执行指令（到点回灌给 AI 的 prompt）"
+                rules={[{ required: true, message: '请输入执行指令' }]}
+            >
+                <Input.TextArea rows={4} placeholder="到点时自动发给 AI 的内容" />
+            </Form.Item>
+            <Form.Item name="kind" label="触发方式" rules={[{ required: true }]}>
+                <Select options={KIND_OPTIONS} />
+            </Form.Item>
 
-                {kind === 'after' && (
-                    <Form.Item
-                        name="afterSeconds"
-                        label="延迟秒数"
-                        rules={[{ required: true, message: '请输入延迟秒数' }]}
-                    >
-                        <InputNumber min={1} style={{ width: '100%' }} addonAfter="秒后执行" />
-                    </Form.Item>
-                )}
-                {kind === 'at' && (
-                    <Form.Item name="at" label="执行时间" rules={[{ required: true, message: '请选择执行时间' }]}>
-                        <DatePicker showTime style={{ width: '100%' }} />
-                    </Form.Item>
-                )}
-                {kind === 'every' && (
-                    <Form.Item label="间隔" required>
-                        <Space.Compact style={{ width: '100%' }}>
-                            <Form.Item name="everyValue" noStyle rules={[{ required: true, message: '请输入间隔' }]}>
-                                <InputNumber min={1} style={{ width: '60%' }} />
-                            </Form.Item>
-                            <Form.Item name="everyUnit" noStyle initialValue="minute">
-                                <Select
-                                    style={{ width: '40%' }}
-                                    options={[
-                                        { value: 'second', label: '秒' },
-                                        { value: 'minute', label: '分钟' },
-                                        { value: 'hour', label: '小时' }
-                                    ]}
-                                />
-                            </Form.Item>
-                        </Space.Compact>
-                    </Form.Item>
-                )}
-                {(kind === 'daily' || kind === 'weekly') && (
-                    <Form.Item name="time" label="时间" rules={[{ required: true, message: '请选择时间' }]}>
-                        <TimePicker format="HH:mm" style={{ width: '100%' }} />
-                    </Form.Item>
-                )}
-                {kind === 'weekly' && (
-                    <Form.Item name="weekdays" label="星期" rules={[{ required: true, message: '请选择星期' }]}>
-                        <Select mode="multiple" options={WEEKDAY_OPTIONS} placeholder="选择每周哪几天" />
-                    </Form.Item>
-                )}
-                {kind === 'cron' && (
-                    <Form.Item
-                        name="cronExpr"
-                        label="cron 表达式（五段：分 时 日 月 周）"
-                        rules={[
-                            { required: true, message: '请输入 cron 表达式' },
-                            {
-                                validator: (_r, value) => {
-                                    const err = value ? validateCron(value) : null;
-                                    return err ? Promise.reject(new Error(err)) : Promise.resolve();
-                                }
+            {kind === 'after' && (
+                <Form.Item label="延迟秒数" name="afterSeconds" rules={[{ required: true, message: '请输入延迟秒数' }]}>
+                    <InputNumber min={1} />
+                </Form.Item>
+            )}
+            {kind === 'at' && (
+                <Form.Item name="at" label="执行时间" rules={[{ required: true, message: '请选择执行时间' }]}>
+                    <DatePicker showTime style={{ width: '100%' }} />
+                </Form.Item>
+            )}
+            {kind === 'every' && (
+                <Form.Item label="间隔" required>
+                    <Space.Compact style={{ width: '100%' }}>
+                        <Form.Item name="everyValue" noStyle rules={[{ required: true, message: '请输入间隔' }]}>
+                            <InputNumber min={1} style={{ width: '60%' }} />
+                        </Form.Item>
+                        <Form.Item name="everyUnit" noStyle initialValue="minute">
+                            <Select
+                                style={{ width: '40%' }}
+                                options={[
+                                    { value: 'second', label: '秒' },
+                                    { value: 'minute', label: '分钟' },
+                                    { value: 'hour', label: '小时' }
+                                ]}
+                            />
+                        </Form.Item>
+                    </Space.Compact>
+                </Form.Item>
+            )}
+            {(kind === 'daily' || kind === 'weekly') && (
+                <Form.Item name="time" label="时间" rules={[{ required: true, message: '请选择时间' }]}>
+                    <TimePicker format="HH:mm" style={{ width: '100%' }} />
+                </Form.Item>
+            )}
+            {kind === 'weekly' && (
+                <Form.Item name="weekdays" label="星期" rules={[{ required: true, message: '请选择星期' }]}>
+                    <Select mode="multiple" options={WEEKDAY_OPTIONS} placeholder="选择每周哪几天" />
+                </Form.Item>
+            )}
+            {kind === 'cron' && (
+                <Form.Item
+                    name="cronExpr"
+                    label="cron 表达式（五段：分 时 日 月 周）"
+                    rules={[
+                        { required: true, message: '请输入 cron 表达式' },
+                        {
+                            validator: (_r, value) => {
+                                const err = value ? validateCron(value) : null;
+                                return err ? Promise.reject(new Error(err)) : Promise.resolve();
                             }
-                        ]}
-                    >
-                        <Input placeholder="如 0 9 * * 1-5（工作日每天 09:00）" />
-                    </Form.Item>
-                )}
-                {(kind === 'daily' || kind === 'weekly' || kind === 'cron') && (
-                    <Form.Item name="timeZone" label="时区（可选，IANA 名，缺省用本机时区）">
-                        <Input placeholder="如 Asia/Shanghai" />
-                    </Form.Item>
-                )}
-            </Form>
-        </Modal>
+                        }
+                    ]}
+                >
+                    <Input placeholder="如 0 9 * * 1-5（工作日每天 09:00）" />
+                </Form.Item>
+            )}
+            {(kind === 'daily' || kind === 'weekly' || kind === 'cron') && (
+                <Form.Item name="timeZone" label="时区（可选，IANA 名，缺省用本机时区）">
+                    <Input placeholder="如 Asia/Shanghai" />
+                </Form.Item>
+            )}
+        </Form>
     );
 }

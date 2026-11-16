@@ -9,7 +9,7 @@ import {
     reactiveCompactContext,
     withReactiveCompaction
 } from '@/agent/compaction';
-import type { CompactContextParams } from '@/agent/compaction/compactor';
+import { compactionUsageScope, type CompactContextParams } from '@/agent/compaction/compactor';
 import { CLEARED_TOOL_OUTPUT } from '@/agent/compaction/microcompact';
 import { generateCompactionSummary } from '@/agent/compaction/summarizer';
 import { estimateMessagesTokens } from '@/agent/compaction/token-estimate';
@@ -64,17 +64,20 @@ function checkpoint(overrides: Partial<CompactionCheckpoint> = {}): CompactionCh
     };
 }
 
-function fixture(
-    input = messages(),
-    cp?: CompactionCheckpoint,
-    persistedMessages: UIMessage[] = [
-        { id: 'persisted', role: 'assistant', parts: [], metadata: { usage: { totalTokens: 100_000 } } }
-    ]
-) {
+function fixture(input = messages(), cp?: CompactionCheckpoint, persistedMessages?: UIMessage[]) {
+    const latest = [...input].reverse().find((message) => message.role === 'assistant');
+    const scope = compactionUsageScope(
+        model,
+        cp && input.findIndex((m) => m.id === cp.boundaryMessageId) > 0 ? cp : undefined
+    );
+    const persisted =
+        persistedMessages ??
+        (latest ? [{ ...latest, metadata: { compactionUsageScope: scope, usage: { totalTokens: 100_000 } } }] : []);
     let saved = cp;
-    const get = vi.fn(async () => ({ messages: persistedMessages, compaction: saved }));
-    const updateCompaction = vi.fn(async (_sessionId: string, next: CompactionCheckpoint) => {
+    const get = vi.fn(async () => ({ messages: persisted, compaction: saved }));
+    const updateCompaction = vi.fn(async (_sessionId: string, next: CompactionCheckpoint, _commit: unknown) => {
         saved = next;
+        return true;
     });
     const params: CompactContextParams = {
         store: { get, updateCompaction } as unknown as CompactContextParams['store'],
@@ -140,13 +143,16 @@ describe('summary generation through the real AI SDK', () => {
 });
 
 describe('cross-turn compaction orchestration', () => {
-    it('does no work when disabled, including forced compaction', async () => {
+    it('applies an existing checkpoint while skipping new automatic compression when disabled', async () => {
         settings.autoCompactEnabled = false;
-        const f = fixture();
+        const f = fixture(messages(), checkpoint());
         for (const compact of [maybeCompactContext, reactiveCompactContext]) {
-            expect(await compact(f.params)).toEqual({ modelInput: f.params.messages, changed: false });
+            const result = await compact(f.params);
+            expect(result.changed).toBe(false);
+            expect(result.modelInput[0].id).toBe('m2');
+            expect(result.modelInput[0].parts[0]).toMatchObject({ text: expect.stringContaining('旧摘要') });
         }
-        expect(f.get).not.toHaveBeenCalled();
+        expect(f.updateCompaction).not.toHaveBeenCalled();
         expect(createModel).not.toHaveBeenCalled();
     });
 
@@ -188,7 +194,8 @@ describe('cross-turn compaction orchestration', () => {
                 summarizedCount: 6,
                 createdAt: expect.any(Number),
                 tokensBefore: 100_000
-            })
+            }),
+            expect.objectContaining({ expected: expect.any(Object) })
         );
         expect(f.params.onCompacting).toHaveBeenCalledOnce();
         const prompt = JSON.stringify(sdkModel.doGenerateCalls[0].prompt);
@@ -213,7 +220,8 @@ describe('cross-turn compaction orchestration', () => {
         expect(rolled.marker).toMatchObject({ summarizedCount: 4, keptCount: 2 });
         expect(high.updateCompaction).toHaveBeenCalledWith(
             high.params.sessionId,
-            expect.objectContaining({ summarizedCount: 6 })
+            expect.objectContaining({ summarizedCount: 6 }),
+            expect.any(Object)
         );
         const prompt = JSON.stringify(sdkModel.doGenerateCalls[0].prompt);
         expect(prompt).toContain('【已有摘要】');
@@ -228,14 +236,15 @@ describe('cross-turn compaction orchestration', () => {
         expect(JSON.stringify(sdkModel.doGenerateCalls[0].prompt)).not.toContain('旧摘要');
         expect(f.updateCompaction).toHaveBeenCalledWith(
             f.params.sessionId,
-            expect.objectContaining({ summarizedCount: 6 })
+            expect.objectContaining({ summarizedCount: 6 }),
+            expect.any(Object)
         );
     });
 
     it('leaves input alone when history is absent or its estimated usage is below threshold', async () => {
         const f = fixture(messages(), undefined, []);
         f.get.mockResolvedValue(undefined as unknown as Awaited<ReturnType<typeof f.get>>);
-        expect(await maybeCompactContext(f.params)).toEqual({ modelInput: f.params.messages, changed: false });
+        expect(await maybeCompactContext(f.params)).toMatchObject({ modelInput: f.params.messages, changed: false });
         expect(createModel).not.toHaveBeenCalled();
     });
 
@@ -249,7 +258,7 @@ describe('cross-turn compaction orchestration', () => {
         async (metadata) => {
             const input = messages(6);
             input[3].metadata = { usage: { totalTokens: 1_000_000 } };
-            input[5].metadata = metadata;
+            input[5].metadata = { ...metadata, compactionUsageScope: compactionUsageScope(model) };
             input.push({ id: 'new-user', role: 'user', parts: [{ type: 'text', text: '新问题' }] });
             const f = fixture(input, undefined, [{ id: 'u', role: 'user', parts: [] }]);
             const result = await maybeCompactContext(f.params);
@@ -270,12 +279,17 @@ describe('cross-turn compaction orchestration', () => {
         }
     );
 
-    it('adds all new messages if no current assistant exists and character estimates alone can trigger summarization', async () => {
+    it('ignores usage outside the current prompt and can trigger with character estimates alone', async () => {
         const input = messages().map((m) => ({ ...m, role: 'user' as const }));
-        const f = fixture(input);
-        expect((await maybeCompactContext(f.params)).marker?.tokensBefore).toBe(
-            100_000 + estimateMessagesTokens(input)
-        );
+        const f = fixture(input, undefined, [
+            {
+                id: 'unrelated',
+                role: 'assistant',
+                parts: [],
+                metadata: { compactionUsageScope: compactionUsageScope(model), usage: { totalTokens: 100_000 } }
+            }
+        ]);
+        expect((await maybeCompactContext(f.params)).marker).toBeUndefined();
         const large = fixture(
             messages().map((m) => ({ ...m, parts: [{ type: 'text' as const, text: '字'.repeat(20_000) }] })),
             undefined,
@@ -298,7 +312,10 @@ describe('cross-turn compaction orchestration', () => {
             ]
         })) as UIMessage[];
         const smallUsage = fixture(input, undefined, [
-            { id: 'a', role: 'assistant', parts: [], metadata: { usage: { totalTokens: 60_000 } } }
+            {
+                ...input[13],
+                metadata: { compactionUsageScope: compactionUsageScope(model), usage: { totalTokens: 60_000 } }
+            }
         ]);
         const micro = await maybeCompactContext(smallUsage.params);
         expect(micro.changed).toBe(true);
@@ -313,7 +330,8 @@ describe('cross-turn compaction orchestration', () => {
         expect((await maybeCompactContext(rolling.params)).marker?.tokensBefore).toBe(100_000);
         expect(rolling.updateCompaction).toHaveBeenCalledWith(
             rolling.params.sessionId,
-            expect.objectContaining({ summarizedCount: 10 })
+            expect.objectContaining({ summarizedCount: 10 }),
+            expect.any(Object)
         );
         const failing = fixture(input, checkpoint());
         sdkModel.doGenerate = async () => generated(' ');
@@ -326,7 +344,7 @@ describe('cross-turn compaction orchestration', () => {
         expect(failing.updateCompaction).not.toHaveBeenCalled();
     });
 
-    it('discounts only newly clearable tool groups from previous usage and handles no-assistant history', async () => {
+    it('uses estimated post-microcompaction size when no assistant usage is available', async () => {
         const input = messages(7).map((m, i) => ({
             ...m,
             role: 'user' as const,
@@ -342,27 +360,77 @@ describe('cross-turn compaction orchestration', () => {
         })) as UIMessage[];
         const f = fixture(input);
         const result = await reactiveCompactContext(f.params);
-        expect(result.marker?.tokensBefore).toBeGreaterThan(100_000);
-        expect(result.marker?.tokensBefore).toBeLessThan(100_000 + estimateMessagesTokens(input));
+        expect(result.marker?.tokensBefore).toBeLessThan(estimateMessagesTokens(input));
     });
 
-    it('retains tool and file annotations and limits transcript to its last 24k characters', async () => {
+    it('ignores historical usage after a model or checkpoint change', async () => {
+        const changedModel = fixture();
+        changedModel.params.model = { ...model, modelName: 'other-model' };
+        expect((await maybeCompactContext(changedModel.params)).marker).toBeUndefined();
+        const changedCheckpoint = fixture(messages(), checkpoint(), [
+            {
+                ...messages()[7],
+                metadata: { usage: { totalTokens: 100_000 }, compactionUsageScope: compactionUsageScope(model) }
+            }
+        ]);
+        expect((await maybeCompactContext(changedCheckpoint.params)).marker).toBeUndefined();
+        expect(createModel).not.toHaveBeenCalled();
+    });
+
+    it('skips overflow retries when microcompaction produces the same failed input', async () => {
+        const input = messages(14);
+        for (const message of input) {
+            message.parts = [
+                {
+                    type: 'tool-Read',
+                    toolCallId: message.id,
+                    state: 'output-available',
+                    input: {},
+                    output: 'a'.repeat(40_000)
+                }
+            ];
+        }
+        const f = fixture(input, undefined, []);
+        const first = await maybeCompactContext(f.params);
+        expect(first.changed).toBe(true);
+        expect(first.marker).toBeUndefined();
+        // 摘要失败时，反应式压缩只能退回到已经发送过的微压缩输入。
+        sdkModel.doGenerate = async () => generated(' ');
+        const retry = await reactiveCompactContext(f.params, first.modelInput);
+        expect(retry.changed).toBe(false);
+        expect(retry.modelInput).toEqual(first.modelInput);
+        expect(f.updateCompaction).not.toHaveBeenCalled();
+    });
+
+    it('does not commit partially summarized history if a later batch fails', async () => {
+        const input = messages(4);
+        input[0].parts = [{ type: 'text', text: '字'.repeat(30_000) }];
+        const f = fixture(input);
+        sdkModel = new MockLanguageModelV4({ doGenerate: [generated(), generated(' ')] });
+        vi.mocked(createModel).mockReturnValue(sdkModel);
+        expect((await maybeCompactContext(f.params)).marker).toBeUndefined();
+        expect(sdkModel.doGenerateCalls).toHaveLength(2);
+        expect(f.updateCompaction).not.toHaveBeenCalled();
+    });
+
+    it('batches oversized history in order and retains bounded tool evidence and file annotations', async () => {
         const input = messages(4);
         input[0].parts = [
-            { type: 'text', text: 'discard-prefix' + 'a'.repeat(25_000) },
+            { type: 'text', text: 'original-requirement' + 'a'.repeat(25_000) },
             { type: 'tool-Read', output: 'data' },
             { type: 'file' }
         ] as UIMessage['parts'];
         input[1].parts = [{ type: 'text' }, { type: 'text', text: 'tail' }] as UIMessage['parts'];
         const f = fixture(input);
         await maybeCompactContext(f.params);
-        const prompt = sdkModel.doGenerateCalls[0].prompt[1];
-        expect(JSON.stringify(prompt)).not.toContain('discard-prefix');
-        expect(JSON.stringify(prompt)).toContain('[工具调用x1] [附件x1]');
-        expect(JSON.stringify(prompt)).toContain('助手：tail');
-        const text = prompt.role === 'user' && prompt.content[0].type === 'text' ? prompt.content[0].text : '';
-        const transcript = text.split('【需要并入摘要的对话记录】\n')[1].split('\n\n请输出')[0];
-        expect(transcript).toHaveLength(24_000);
+        expect(sdkModel.doGenerateCalls).toHaveLength(2);
+        const [first, second] = sdkModel.doGenerateCalls.map((call) => JSON.stringify(call.prompt));
+        expect(first).toContain('original-requirement');
+        expect(second).toContain('【已有摘要】');
+        expect(second).toContain('[工具调用x1] [附件x1]');
+        expect(second).toContain('Read | data');
+        expect(second).toContain('助手：tail');
+        expect(f.updateCompaction).toHaveBeenCalledOnce();
     });
 
     it.each(
@@ -375,7 +443,7 @@ describe('cross-turn compaction orchestration', () => {
         ].map((input) => ({ input }))
     )('does not summarize when no valid user boundary or transcript exists', async ({ input }) => {
         const f = fixture(input);
-        expect(await reactiveCompactContext(f.params)).toEqual({ modelInput: input, changed: false });
+        expect(await reactiveCompactContext(f.params)).toMatchObject({ modelInput: input, changed: false });
         expect(f.params.onCompacting).not.toHaveBeenCalled();
         expect(createModel).not.toHaveBeenCalled();
     });
@@ -415,11 +483,11 @@ describe('cross-turn compaction orchestration', () => {
     it('falls back to the existing input on summary or checkpoint persistence failure', async () => {
         const f = fixture();
         sdkModel.doGenerate = async () => generated('  ');
-        expect(await maybeCompactContext(f.params)).toEqual({ modelInput: f.params.messages, changed: false });
+        expect(await maybeCompactContext(f.params)).toMatchObject({ modelInput: f.params.messages, changed: false });
         expect(f.updateCompaction).not.toHaveBeenCalled();
         sdkModel.doGenerate = async () => generated();
         f.updateCompaction.mockRejectedValue(new Error('disk full'));
-        expect(await maybeCompactContext(f.params)).toEqual({ modelInput: f.params.messages, changed: false });
+        expect(await maybeCompactContext(f.params)).toMatchObject({ modelInput: f.params.messages, changed: false });
     });
 
     it('breaks after three consecutive failures per session, reactive mode bypasses it, and success resets it', async () => {
@@ -436,7 +504,12 @@ describe('cross-turn compaction orchestration', () => {
         expect((await reactiveCompactContext(f.params)).changed).toBe(true);
         // 模拟历史被回滚，成功清零后应允许普通模式再次尝试。
         f.get.mockResolvedValue({
-            messages: [{ id: 'a', role: 'assistant', parts: [], metadata: { usage: { totalTokens: 100_000 } } }],
+            messages: [
+                {
+                    ...f.params.messages[7],
+                    metadata: { compactionUsageScope: compactionUsageScope(model), usage: { totalTokens: 100_000 } }
+                }
+            ],
             compaction: undefined
         });
         await maybeCompactContext(f.params);

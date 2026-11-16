@@ -1,13 +1,12 @@
 import {
     CheckCircleFilled,
     ClockCircleOutlined,
-    DownOutlined,
     LoadingOutlined,
     LockOutlined,
-    OrderedListOutlined,
-    RightOutlined
+    OrderedListOutlined
 } from '@ant-design/icons';
 import { getToolName, isToolUIPart, type UIMessage } from 'ai';
+import { Button, Popover } from 'antd';
 import { memo, useMemo, useState } from 'react';
 
 import type { Task, TaskToolOutput } from '@/types/task';
@@ -16,7 +15,7 @@ import { useChatMessages } from '../chat-context';
 
 import useStyles from './styles';
 
-/** 任务清单工具名（后端 core/tools/task-tools.ts） */
+/** 可返回完整任务清单的工具 */
 const TASK_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TaskList']);
 
 /**
@@ -27,6 +26,8 @@ const TASK_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TaskList']);
  */
 function deriveLatestTasks(messages: UIMessage[]): Task[] {
     for (let i = messages.length - 1; i >= 0; i--) {
+        // 新一轮尚未返回任务快照时，避免重新展示上一轮遗留的任务。
+        if (messages[i].role === 'user') break;
         const parts = messages[i].parts;
         for (let j = parts.length - 1; j >= 0; j--) {
             const part = parts[j];
@@ -55,11 +56,8 @@ interface TaskPanelViewProps {
 }
 
 /**
- * 常驻任务清单面板：挂在输入框上方，只显示「当前」这一份清单并原地更新。
- * 与消息流里的内联 TaskListCard（历史轨迹）互补。无任务时不渲染。
- *
- * 分两层：外层订阅 messages 并派生 tasks（每 token 执行一次 O(1) 倒序扫描）；
- * 内层 memo 只在 tasks 数组引用变化时重渲染——流式正文增长不影响任务对象，故内层被跳过。
+ * 标题栏里的实时任务进度。由会话运行态控制挂载，避免模型漏写最终 TaskUpdate 时一直显示。
+ * 历史工具调用仍由消息流里的内联 TaskListCard 展示。
  */
 export function TaskPanel() {
     const messages = useChatMessages();
@@ -69,7 +67,7 @@ export function TaskPanel() {
 
 const TaskPanelView = memo(function TaskPanelView({ tasks }: TaskPanelViewProps) {
     const { styles, cx } = useStyles();
-    const [collapsed, setCollapsed] = useState(false);
+    const [open, setOpen] = useState(false);
 
     const completedIds = useMemo(
         () => new Set(tasks.filter((t) => t.status === 'completed').map((t) => t.id)),
@@ -77,29 +75,19 @@ const TaskPanelView = memo(function TaskPanelView({ tasks }: TaskPanelViewProps)
     );
 
     const doneCount = completedIds.size;
-    // 无任务、或全部任务已完成时都不常驻：完成后面板自动收起，历史轨迹仍留在会话流的内联卡片
+    // 仅在当前轮有未完成任务时显示实时入口。
     if (tasks.length === 0 || doneCount === tasks.length) return null;
 
-    const current = tasks.find((t) => t.status === 'in_progress');
-
     return (
-        <div className={cx('task-panel', styles.toString())}>
-            <button type="button" className="task-panel-header" onClick={() => setCollapsed((v) => !v)}>
-                {collapsed ? <RightOutlined /> : <DownOutlined />}
-                <OrderedListOutlined className="task-panel-header-icon" />
-                <span className="task-panel-title">任务清单</span>
-                <span className="task-panel-progress">
-                    {doneCount}/{tasks.length}
-                </span>
-                {collapsed && current && (
-                    <span className="task-panel-current">
-                        <LoadingOutlined /> {current.activeForm || current.subject}
-                    </span>
-                )}
-            </button>
-
-            {!collapsed && (
-                <ul className="task-panel-list">
+        <Popover
+            title="任务清单"
+            placement="bottomRight"
+            trigger="click"
+            open={open}
+            onOpenChange={setOpen}
+            destroyOnHidden
+            content={
+                <ul className={cx('task-panel-list', styles.toString())}>
                     {tasks.map((task) => {
                         const blocked = isBlocked(task, completedIds);
                         return (
@@ -121,8 +109,21 @@ const TaskPanelView = memo(function TaskPanelView({ tasks }: TaskPanelViewProps)
                         );
                     })}
                 </ul>
-            )}
-        </div>
+            }
+        >
+            <Button
+                type="text"
+                size="small"
+                icon={<OrderedListOutlined />}
+                aria-label={`任务清单，已完成 ${doneCount}/${tasks.length}`}
+                aria-expanded={open}
+                onKeyDown={(event) => {
+                    if (event.key === 'Escape') setOpen(false);
+                }}
+            >
+                {doneCount}/{tasks.length}
+            </Button>
+        </Popover>
     );
 });
 

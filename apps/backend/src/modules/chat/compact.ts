@@ -60,22 +60,14 @@ export async function compactConversation(id: string, instructions?: string): Pr
         sessionId: id,
         messages: toUIMessages(conv.messages),
         model,
-        instructions
+        instructions,
+        snapshot: conv
     });
+    if (outcome.conflict) throw new CompactError(409, '会话历史已更新，请重新压缩');
     if (!outcome.marker) return { changed: false };
 
     const marker: CompactionMarker = outcome.marker;
     const target = [...conv.messages].reverse().find((m) => m.role === 'assistant');
-    if (target) {
-        const metadata = target.metadata && typeof target.metadata === 'object' ? target.metadata : {};
-        try {
-            // appendMessages 按 id 合并：只更新该消息的 metadata，其余消息与会话元信息不变
-            await store.appendMessages(id, [{ ...target, metadata: { ...metadata, manualCompaction: marker } }]);
-        } catch (err) {
-            // 检查点已写入，下一轮照常生效；只是界面上缺少分隔条
-            log.warn('手动压缩标记落库失败', { id, err });
-        }
-    }
     log.info('已手动压缩上下文', { id, ...marker, withInstructions: !!instructions?.trim() });
     return { changed: true, marker, ...(target ? { messageId: target.id } : {}) };
 }

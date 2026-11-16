@@ -74,7 +74,7 @@ function estimateContentTokens(content: unknown): number {
             continue;
         }
         // UIMessage 的工具 part 形如 `tool-Bash`，入参与产出都在 part 上
-        if (typeof part.type === 'string' && part.type.startsWith('tool-')) {
+        if (part.type === 'dynamic-tool' || (typeof part.type === 'string' && part.type.startsWith('tool-'))) {
             tokens += PER_TOOL_TOKENS + estimateTokens(safeJson(part.input)) + estimateTokens(safeJson(part.output));
         }
     }

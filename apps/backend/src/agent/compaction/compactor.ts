@@ -13,12 +13,14 @@
  * - 工具完整性：压缩边界只落在 user 消息（一轮之始），不切断同一轮内的工具调用/结果 part。
  * - 判阈信号：上一轮 assistant 的 usage 取**最后一步**（即当时的上下文大小），而不是整轮所有 step 的累加。
  */
-import type { UIMessage } from 'ai';
+import { createHash } from 'node:crypto';
+
+import { getToolName, isToolUIPart, type UIMessage } from 'ai';
 
 import { getAppSettings } from '@/config/settings-store';
 import type { ResolvedModel } from '@/config/types';
 import type { getConversationStore } from '@/modules/conversations';
-import type { CompactionCheckpoint } from '@/modules/conversations';
+import type { CompactionCheckpoint, SavedConversation } from '@/modules/conversations';
 import { createLogger } from '@/platform/logging/index';
 
 import { microcompactMessages } from './microcompact';
@@ -39,67 +41,87 @@ const log = createLogger('ContextCompaction');
 /** 会话仓储类型（store 为私有类，经单例工厂的返回类型取得其实例类型）。 */
 type ConversationStore = ReturnType<typeof getConversationStore>;
 
-/** 送入摘要器的转写文本上限（控成本）；超出时保留最靠后的部分。 */
+/** 单次摘要限制输入体积；超长历史按原顺序分批滚动归并。 */
 const MAX_TRANSCRIPT_CHARS = 24_000;
-/** 连续失败计数的有效期：超过该时长未再失败则重新计数（避免一次故障永久停用压缩）。 */
+const MIN_TRANSCRIPT_CHARS = 1000;
+const MAX_TOOL_EXCERPT_CHARS = 480;
+const MAX_TOOL_EXCERPTS_PER_MESSAGE = 6;
+/** 连续失败计数的有效期。 */
 const FAILURE_TTL_MS = 30 * 60_000;
 
-interface LoosePart {
-    type?: string;
-    text?: string;
-}
-
-/** 抽取单条消息的可读文本（文本 part 拼接 + 工具/附件的简短标注），供摘要转写用。 */
-function partsToText(message: UIMessage): string {
-    const parts = (message.parts ?? []) as LoosePart[];
-    let text = parts
-        .filter((p) => p.type === 'text')
-        .map((p) => p.text ?? '')
-        .join('');
-    const toolCount = parts.filter((p) => typeof p.type === 'string' && p.type.startsWith('tool-')).length;
-    const fileCount = parts.filter((p) => p.type === 'file').length;
-    if (toolCount > 0) text += ` [工具调用x${toolCount}]`;
-    if (fileCount > 0) text += ` [附件x${fileCount}]`;
-    return text.trim();
-}
-
-/** 把一组消息转写为「角色：内容」的多行文本；超长时保留最靠后的片段。 */
-function buildTranscript(messages: UIMessage[]): string {
-    const lines = messages
-        .map((m) => `${m.role === 'assistant' ? '助手' : '用户'}：${partsToText(m)}`)
-        .filter((line) => line.length > 3);
-    const transcript = lines.join('\n');
-    return transcript.length > MAX_TRANSCRIPT_CHARS ? transcript.slice(-MAX_TRANSCRIPT_CHARS) : transcript;
-}
-
-/**
- * 读取最近一条 assistant 消息 metadata 里的使用量（上一轮实际用量，权威信号）；无则 undefined。
- *
- * 口径：优先 totalTokens；provider 未给 totalTokens 时用 input+output 兜底。
- * 注意：写入端（chat/service）必须存**最后一步**的 usage，而不是整轮所有 step 的 totalUsage，
- * 否则多步工具轮会把每步输入重复累加，导致判阈严重高估。
- */
-function readPrevTotalTokens(messages: Array<{ role: string; metadata?: unknown }>): number | undefined {
-    for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role !== 'assistant') continue;
-        const usage = (
-            messages[i].metadata as
-                { usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number } } | undefined
-        )?.usage;
-        if (!usage) return undefined;
-        if (typeof usage.totalTokens === 'number' && usage.totalTokens > 0) return usage.totalTokens;
-        const total = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
-        return total > 0 ? total : undefined;
+function excerpt(value: unknown): string {
+    if (value === undefined) return '';
+    try {
+        const text = typeof value === 'string' ? value : JSON.stringify(value);
+        if (!text) return '';
+        if (text.length <= MAX_TOOL_EXCERPT_CHARS) return text;
+        const half = Math.floor(MAX_TOOL_EXCERPT_CHARS / 2);
+        return `${text.slice(0, half)}…${text.slice(-half)}`;
+    } catch {
+        return '';
     }
-    return undefined;
 }
 
-/** 最后一条 assistant 消息的下标（用于估算「上一轮之后新增的消息」token）；无则 -1。 */
-function findLastAssistantIndex(messages: UIMessage[]): number {
-    for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === 'assistant') return i;
+function transcriptLine(message: UIMessage): string {
+    const parts = message.parts ?? [];
+    const text = parts.map((part) => (part.type === 'text' ? (part.text ?? '') : '')).join('');
+    const tools = parts.filter(isToolUIPart);
+    const files = parts.filter((part) => part.type === 'file').length;
+    const results = tools.slice(0, MAX_TOOL_EXCERPTS_PER_MESSAGE).map((part) => {
+        const result = 'output' in part ? excerpt(part.output) : 'errorText' in part ? excerpt(part.errorText) : '';
+        return [getToolName(part), part.state, excerpt(part.input), result].filter(Boolean).join(' | ');
+    });
+    const body = [text, tools.length ? `[工具调用x${tools.length}]` : '', files ? `[附件x${files}]` : '', ...results]
+        .filter(Boolean)
+        .join(' ');
+    return body.trim() ? `${message.role === 'assistant' ? '助手' : '用户'}：${body}` : '';
+}
+
+function* buildTranscripts(messages: UIMessage[], budget: number): Generator<string> {
+    let batch = '';
+    let turn = '';
+    function* append(text: string): Generator<string> {
+        if (batch && batch.length + text.length + 1 > budget) {
+            yield batch;
+            batch = '';
+        }
+        while (text.length > budget) {
+            yield text.slice(0, budget);
+            text = text.slice(budget);
+        }
+        if (text) batch = batch ? `${batch}\n${text}` : text;
     }
-    return -1;
+    for (const message of messages) {
+        if (message.role === 'user' && turn) {
+            yield* append(turn);
+            turn = '';
+        }
+        const line = transcriptLine(message);
+        if (line) turn = turn ? `${turn}\n${line}` : line;
+    }
+    if (turn) yield* append(turn);
+    if (batch) yield batch;
+}
+
+/** 历史用量只对同一模型和检查点有效，旧会话缺少记录时改走估算。 */
+export function compactionUsageScope(model: ResolvedModel, checkpoint?: CompactionCheckpoint): string {
+    return createHash('sha256')
+        .update(JSON.stringify([model.kind, model.baseURL, model.modelName, model.contextWindow, checkpoint]))
+        .digest('hex');
+}
+
+function readPrevTotalTokens(metadata: unknown, scope: string): number | undefined {
+    const entry = metadata as
+        | {
+              usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number };
+              compactionUsageScope?: string;
+          }
+        | undefined;
+    if (entry?.compactionUsageScope !== scope || !entry.usage) return undefined;
+    const usage = entry.usage;
+    if (typeof usage.totalTokens === 'number' && usage.totalTokens > 0) return usage.totalTokens;
+    const total = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+    return total > 0 ? total : undefined;
 }
 
 /**
@@ -182,6 +204,8 @@ export interface CompactionOutcome {
     marker?: CompactionMarker;
     /** 模型输入是否真的变小/被改写（反应式压缩据此决定是否值得重试，避免用同一份 prompt 再撞一次）。 */
     changed: boolean;
+    usageScope?: string;
+    conflict?: boolean;
 }
 
 export interface CompactContextParams {
@@ -195,11 +219,13 @@ export interface CompactContextParams {
     model: ResolvedModel;
     /** 确定要摘要、即将发起摘要模型调用前回调一次（供前端展示「压缩中」）。只在真正触发压缩时调用。 */
     onCompacting?: () => void;
+    signal?: AbortSignal;
 }
 
 export interface ForceCompactParams extends CompactContextParams {
     /** 用户给出的摘要保留要点（如「保留方案调整的结论」） */
     instructions?: string;
+    snapshot?: SavedConversation;
 }
 
 interface CompactionRunOptions {
@@ -210,7 +236,9 @@ interface CompactionRunOptions {
     /** 跳过连续失败熔断（反应式压缩是最后机会）。 */
     bypassFailureBreaker?: boolean;
     /** 不受「上下文压缩」开关影响（用户显式 /compact）。 */
-    ignoreSetting?: boolean;
+    manual?: boolean;
+    failedInput?: UIMessage[];
+    snapshot?: SavedConversation;
     /** 摘要额外要求。 */
     instructions?: string;
 }
@@ -261,10 +289,14 @@ export async function maybeCompactContext(params: CompactContextParams): Promise
  * 反应式压缩：provider 已报上下文超限后调用。跳过百分位阈值与失败熔断，用更小的保留区强制压一次；
  * 若没有可压缩空间（例如单条超长附件）则返回原输入，调用方按原错误处理。
  */
-export async function reactiveCompactContext(params: CompactContextParams): Promise<CompactionOutcome> {
+export async function reactiveCompactContext(
+    params: CompactContextParams,
+    failedInput?: UIMessage[]
+): Promise<CompactionOutcome> {
     return runCompaction(params, {
         force: true,
         keepRatio: REACTIVE_KEEP_RATIO,
+        failedInput,
         bypassFailureBreaker: true
     });
 }
@@ -278,64 +310,70 @@ export async function forceCompactContext(params: ForceCompactParams): Promise<C
         force: true,
         keepRatio: KEEP_RATIO,
         bypassFailureBreaker: true,
-        ignoreSetting: true,
+        manual: true,
+        snapshot: params.snapshot,
         instructions: params.instructions
     });
 }
 
 async function runCompaction(params: CompactContextParams, options: CompactionRunOptions): Promise<CompactionOutcome> {
-    const { store, sessionId, messages, model, onCompacting } = params;
+    const { store, sessionId, messages, model, onCompacting, signal } = params;
     const cfg = getAppSettings();
-    if (!cfg.autoCompactEnabled && !options.ignoreSetting) return { modelInput: messages, changed: false };
-
-    const conv = await store.get(sessionId);
+    const conv = options.snapshot ?? (await store.get(sessionId));
     const storedBoundaryIndex = conv?.compaction
-        ? messages.findIndex((m) => m.id === conv.compaction?.boundaryMessageId)
+        ? messages.findIndex((m) => m.id === conv.compaction?.boundaryMessageId && m.role === 'user')
         : -1;
-    // 历史被回滚/裁剪后旧边界可能已不存在：此时忽略旧检查点（含旧摘要），避免把已摘要内容再并一次
     const checkpoint = storedBoundaryIndex > 0 ? conv?.compaction : undefined;
     const reconstructed = checkpoint ? applyCheckpoint(messages, checkpoint) : messages;
+    const usageScope = compactionUsageScope(model, checkpoint);
+    if (!cfg.autoCompactEnabled && !options.manual) {
+        // 开关只控制是否发起压缩，已经提交的手动检查点仍然需要应用。
+        return { modelInput: reconstructed, changed: false, usageScope };
+    }
     const policy = resolveCompactionPolicy(model, cfg.autoCompactThreshold);
-
-    // 第一级：确定性微压缩（零 LLM）。只改模型输入，不动磁盘/界面；省下的 token 参与后续判阈。
+    const retryBudget = options.failedInput ? estimateMessagesTokens(options.failedInput) : undefined;
     const micro = microcompactMessages(reconstructed, {
         thresholdTokens: options.force ? 0 : policy.microcompactThreshold
     });
+    const estimated = estimateMessagesTokens(micro.messages);
+    const fallback = {
+        modelInput: micro.messages,
+        changed: retryBudget === undefined ? micro.savedTokens > 0 : estimated < retryBudget,
+        usageScope
+    };
 
-    // 投影本轮将喂入的 token：优先用上一轮实际用量（最后一步的 input+output）+ 其后新增消息估算；
-    // 无用量时整体估算兜底。
-    // 微压缩节省量只扣「本轮新增」的部分：上一轮的 input 里其实已经清过同一批旧工具产出，
-    // 若把总节省量再从 prevTotal 里扣一次会低估上下文，导致该压不压。
-    const prevTotal = readPrevTotalTokens(conv?.messages ?? []) ?? readPrevTotalTokens(messages);
-    let projected: number;
+    // 用量必须对应请求实际带上的最后一条助手消息，避免回滚、切模型或新检查点后沿用错误基线。
+    let lastAssistantIdx = messages.length - 1;
+    while (lastAssistantIdx >= 0 && messages[lastAssistantIdx].role !== 'assistant') lastAssistantIdx--;
+    const lastAssistant = messages[lastAssistantIdx];
+    const storedAssistant = conv?.messages.find((message) => message.id === lastAssistant?.id);
+    const prevTotal = readPrevTotalTokens(storedAssistant?.metadata ?? lastAssistant?.metadata, usageScope);
+    let projected = estimated;
     if (prevTotal !== undefined) {
-        const lastAssistantIdx = findLastAssistantIndex(messages);
         let incrementalSaved = 0;
         if (micro.savedTokens > 0) {
-            const previousInput = lastAssistantIdx >= 0 ? messages.slice(0, lastAssistantIdx + 1) : [];
+            const previousInput = messages.slice(0, lastAssistantIdx + 1);
             const previousMicro = microcompactMessages(
                 checkpoint ? applyCheckpoint(previousInput, checkpoint) : previousInput,
-                { thresholdTokens: 0 }
+                { thresholdTokens: policy.microcompactThreshold }
             );
             incrementalSaved = Math.max(0, micro.savedTokens - previousMicro.savedTokens);
         }
         projected = Math.max(
-            0,
+            estimated,
             prevTotal - incrementalSaved + estimateMessagesTokens(messages.slice(lastAssistantIdx + 1))
         );
-    } else {
-        projected = estimateMessagesTokens(micro.messages);
     }
 
     if (!options.force && projected < policy.compactThreshold) {
-        return { modelInput: micro.messages, changed: micro.savedTokens > 0 };
+        return fallback;
     }
 
     if (!options.bypassFailureBreaker) {
         const failures = consecutiveFailures(sessionId);
         if (failures >= MAX_CONSECUTIVE_COMPACTION_FAILURES) {
             log.warn('连续压缩失败达到上限，本轮跳过自动压缩', { sessionId, failures });
-            return { modelInput: micro.messages, changed: micro.savedTokens > 0 };
+            return fallback;
         }
     }
 
@@ -345,24 +383,29 @@ async function runCompaction(params: CompactContextParams, options: CompactionRu
     const prevBoundary = checkpoint ? storedBoundaryIndex : 0;
     // 无可压缩空间，或新边界未向前推进（无进展）：降级为微压缩后的输入
     if (!plan || plan.boundaryIndex <= prevBoundary) {
-        return { modelInput: micro.messages, changed: micro.savedTokens > 0 };
+        return fallback;
     }
 
     // 待并入摘要的早期消息：仅取「上次边界 → 新边界」之间（之前的已折进 checkpoint.summary）
     const head = messages.slice(prevBoundary, plan.boundaryIndex);
-    const transcript = buildTranscript(head);
-    if (!transcript) return { modelInput: micro.messages, changed: micro.savedTokens > 0 };
-
-    onCompacting?.(); // 确定要压缩、即将发起摘要调用：通知前端进入「压缩中」
-    const summary = await generateCompactionSummary(transcript, checkpoint?.summary, model, options.instructions);
-    if (!summary) {
-        noteCompactionFailure(sessionId);
-        log.warn('摘要生成失败，保留现有检查点', {
-            sessionId,
-            failures: consecutiveFailures(sessionId)
-        });
-        return { modelInput: micro.messages, changed: micro.savedTokens > 0 };
+    if (!conv || signal?.aborted) return fallback;
+    // 小窗口也要容纳滚动摘要、指令和模型输出，所以每批只使用部分输入额度。
+    const batchBudget = Math.min(MAX_TRANSCRIPT_CHARS, Math.floor(policy.effectiveContextWindow / 2));
+    if (batchBudget < MIN_TRANSCRIPT_CHARS) return fallback;
+    let summary = checkpoint?.summary;
+    let started = false;
+    for (const transcript of buildTranscripts(head, batchBudget)) {
+        if (signal?.aborted) return fallback;
+        if (!started) onCompacting?.();
+        started = true;
+        summary =
+            (await generateCompactionSummary(transcript, summary, model, options.instructions, signal)) ?? undefined;
+        if (!summary) {
+            if (!signal?.aborted) noteCompactionFailure(sessionId);
+            return fallback;
+        }
     }
+    if (!started || !summary || signal?.aborted) return fallback;
 
     const nextCheckpoint: CompactionCheckpoint = {
         summary,
@@ -371,17 +414,6 @@ async function runCompaction(params: CompactContextParams, options: CompactionRu
         summarizedCount: (checkpoint?.summarizedCount ?? 0) + head.length,
         tokensBefore: projected
     };
-    try {
-        await store.updateCompaction(sessionId, nextCheckpoint);
-    } catch (err) {
-        // 检查点没落盘就不能只用摘要：否则下一轮无法重建，摘要白丢
-        noteCompactionFailure(sessionId);
-        log.warn('压缩检查点落库失败，放弃本轮压缩', { sessionId, err });
-        return { modelInput: micro.messages, changed: micro.savedTokens > 0 };
-    }
-    resetCompactionFailures(sessionId);
-
-    // 摘要后的输入再做一次微压缩：保留区里的旧工具产出同样可以清
     const finalMicro = microcompactMessages(applyCheckpoint(messages, nextCheckpoint), {
         thresholdTokens: options.force ? 0 : policy.microcompactThreshold
     });
@@ -391,7 +423,21 @@ async function runCompaction(params: CompactContextParams, options: CompactionRu
         tokensBefore: projected,
         tokensAfter: estimateMessagesTokens(finalMicro.messages)
     };
-    log.info('已自动压缩上下文', {
+    // 反应式重试比较上一份实际输入，避免用同一个 prompt 再撞一次超窗。
+    if (retryBudget !== undefined && marker.tokensAfter >= retryBudget) return fallback;
+    try {
+        const committed = await store.updateCompaction(sessionId, nextCheckpoint, {
+            expected: conv,
+            ...(options.manual ? { manualMarker: marker } : {})
+        });
+        if (!committed) return { ...fallback, conflict: true };
+    } catch (err) {
+        noteCompactionFailure(sessionId);
+        log.warn('压缩检查点落库失败，放弃本轮压缩', { sessionId, err });
+        return fallback;
+    }
+    resetCompactionFailures(sessionId);
+    log.info('已压缩上下文', {
         sessionId,
         tokensBefore: projected,
         tokensAfter: marker.tokensAfter,
@@ -402,7 +448,12 @@ async function runCompaction(params: CompactContextParams, options: CompactionRu
         contextWindow: policy.contextWindow,
         compactThreshold: policy.compactThreshold,
         outputReserveTokens: policy.outputReserveTokens,
-        reactive: options.force
+        reactive: options.force && !options.manual
     });
-    return { modelInput: finalMicro.messages, marker, changed: true };
+    return {
+        modelInput: finalMicro.messages,
+        marker,
+        changed: true,
+        usageScope: compactionUsageScope(model, nextCheckpoint)
+    };
 }
