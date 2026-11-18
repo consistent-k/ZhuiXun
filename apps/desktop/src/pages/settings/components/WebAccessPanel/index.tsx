@@ -181,6 +181,20 @@ export function WebAccessPanel() {
 
                     <div className="web-access-columns">
                         <label className="web-access-field">
+                            <span className="web-access-field-label">可信代理（留空直连）</span>
+                            <Input
+                                placeholder="http://127.0.0.1:7890"
+                                value={form.proxyUrl}
+                                onChange={(event) => patch('proxyUrl', event.target.value)}
+                            />
+                            <span className="web-access-hint">
+                                填写 HTTP(S) 代理地址。代理负责解析目标，仅连接允许列表中逐一填写的 HTTPS 域名。
+                            </span>
+                        </label>
+                    </div>
+
+                    <div className="web-access-columns">
+                        <label className="web-access-field">
                             <span className="web-access-field-label">允许的域名（留空表示不限制）</span>
                             <Input.TextArea
                                 rows={4}
@@ -201,7 +215,7 @@ export function WebAccessPanel() {
                     </div>
                     <div className="web-access-hint web-access-hint--block">
                         规则按行填写，支持 `example.com` 与
-                        `*.example.com`；环回、私网与云元数据地址无论是否在允许列表中都会被拦截。
+                        `*.example.com`。直连时拦截解析到非公网地址的域名。代理模式由可信代理负责目标解析。
                     </div>
 
                     <div className="web-access-actions">

@@ -13,6 +13,7 @@ import {
     getWebSettings,
     importSettings,
     isValidUserEnvKey,
+    isValidWebProxyUrl,
     listEnvKeys,
     listProviders,
     ProviderError,
@@ -201,6 +202,7 @@ const webHostRule = z
 const webWriteSchema = z.object({
     enabled: z.boolean().optional(),
     fetchEnabled: z.boolean().optional(),
+    proxyUrl: z.string().trim().max(2048).refine(isValidWebProxyUrl, '请输入不含凭据的 HTTP(S) 代理地址').optional(),
     allowedHosts: z.array(webHostRule).max(200).optional(),
     blockedHosts: z.array(webHostRule).max(200).optional(),
     requireApproval: z.enum(['never', 'always']).optional(),
@@ -350,6 +352,7 @@ settings.post('/api/settings/web/test', async (c) => {
     const startedAt = Date.now();
     try {
         const page = await fetchReadablePage(parsed.data.url, {
+            proxyUrl: settings.proxyUrl,
             allowedHosts: settings.allowedHosts,
             blockedHosts: settings.blockedHosts,
             timeoutMs: settings.timeoutMs,

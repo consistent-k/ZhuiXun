@@ -18,6 +18,7 @@ const log = createLogger('WebFetch');
 export interface FetchPolicy extends HostPolicy {
     timeoutMs: number;
     maxBytes: number;
+    proxyUrl?: string;
 }
 
 export interface RawResponse {
@@ -123,7 +124,7 @@ function mapNodeError(error: unknown): WebAccessError {
  */
 function performRequest(
     url: URL,
-    pinned: PinnedAddress,
+    connection: { pinned: PinnedAddress } | { proxyAgent: https.Agent },
     policy: FetchPolicy,
     timeoutMs: number,
     signal?: AbortSignal
@@ -156,6 +157,8 @@ function performRequest(
             options: { all?: boolean },
             callback: (err: NodeJS.ErrnoException | null, address: unknown, family?: number) => void
         ): void => {
+            if (!('pinned' in connection)) throw new Error('直连请求缺少已校验的地址');
+            const { pinned } = connection;
             if (options?.all) {
                 callback(null, [{ address: pinned.address, family: pinned.family }]);
                 return;
@@ -174,7 +177,9 @@ function performRequest(
                         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
                         'Accept-Encoding': 'gzip, deflate, br'
                     },
-                    lookup: safeLookup as unknown as http.RequestOptions['lookup']
+                    ...('proxyAgent' in connection
+                        ? { agent: connection.proxyAgent }
+                        : { agent: false as const, lookup: safeLookup as unknown as http.RequestOptions['lookup'] })
                 },
                 (response) => {
                     const status = response.statusCode ?? 0;
@@ -316,14 +321,41 @@ function performRequest(
  */
 export async function requestUrl(rawUrl: string, policy: FetchPolicy, signal?: AbortSignal): Promise<RawResponse> {
     const deadline = Date.now() + policy.timeoutMs;
-    let current = parseAndValidateUrl(rawUrl, policy);
+    const proxyUrl = policy.proxyUrl;
+    // 代理负责解析目标，客户端无法核验最终地址。只允许用户逐一列出的 HTTPS 域名，重定向也受此约束。
+    const proxyHosts = proxyUrl ? policy.allowedHosts.filter((host) => !host.includes('*')) : undefined;
+    if (proxyHosts?.length === 0) {
+        throw new WebAccessError('BLOCKED_HOST', '使用代理时，请先在允许列表中填写具体目标域名');
+    }
+    const hostPolicy = proxyHosts ? { ...policy, allowedHosts: proxyHosts } : policy;
+    let current = parseAndValidateUrl(rawUrl, hostPolicy);
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-        const pinned = await resolvePublicAddress(current.hostname);
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) throw new WebAccessError('TIMEOUT', `抓取超时（${policy.timeoutMs}ms）`);
-
-        const response = await withSlot(() => performRequest(current, pinned, policy, remaining, signal));
+        const response = await withSlot(async () => {
+            const remaining = () => {
+                const ms = deadline - Date.now();
+                if (ms <= 0) throw new WebAccessError('TIMEOUT', `抓取超时（${policy.timeoutMs}ms）`);
+                return ms;
+            };
+            remaining();
+            if (!proxyUrl) {
+                const pinned = await resolvePublicAddress(current.hostname);
+                return performRequest(current, { pinned }, policy, remaining(), signal);
+            }
+            if (current.protocol !== 'https:' || current.port) {
+                throw new WebAccessError('INVALID_URL', '代理模式仅支持 HTTPS 443 端口');
+            }
+            const [major, minor] = process.versions.node.split('.').map(Number);
+            if (major === 24 && minor < 5) {
+                throw new WebAccessError('NETWORK_ERROR', 'WebFetch 代理需要 Node.js 24.5 或更高版本');
+            }
+            const proxyAgent = new https.Agent({ proxyEnv: { HTTPS_PROXY: proxyUrl } });
+            try {
+                return await performRequest(current, { proxyAgent }, policy, remaining(), signal);
+            } finally {
+                proxyAgent.destroy();
+            }
+        });
 
         if (REDIRECT_STATUS.has(response.status)) {
             if (!response.location) {
@@ -333,7 +365,7 @@ export async function requestUrl(rawUrl: string, policy: FetchPolicy, signal?: A
                 throw new WebAccessError('HTTP_ERROR', `重定向次数超过 ${MAX_REDIRECTS} 次`, response.status);
             }
             const next = new URL(response.location, current);
-            current = parseAndValidateUrl(next.toString(), policy);
+            current = parseAndValidateUrl(next.toString(), hostPolicy);
             continue;
         }
 

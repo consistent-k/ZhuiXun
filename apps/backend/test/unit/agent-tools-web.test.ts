@@ -16,6 +16,7 @@ const options = { toolCallId: 'web-call', messages: [], context: {} };
 const settings: WebSettingsView = {
     enabled: true,
     fetchEnabled: true,
+    proxyUrl: 'http://127.0.0.1:7890',
     requireApproval: 'never',
     allowedHosts: ['example.test'],
     blockedHosts: ['blocked.example.test'],
@@ -65,6 +66,7 @@ describe('agent WebFetch tool execute', () => {
         expect(fetchReadablePage).toHaveBeenCalledWith(page.url, {
             allowedHosts: settings.allowedHosts,
             blockedHosts: settings.blockedHosts,
+            proxyUrl: settings.proxyUrl,
             timeoutMs: settings.timeoutMs,
             maxBytes: settings.maxBytes,
             maxChars: settings.maxChars

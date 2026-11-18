@@ -174,6 +174,7 @@ describe('settings real HTTP router', () => {
         const config = {
             enabled: false,
             fetchEnabled: false,
+            proxyUrl: 'http://127.0.0.1:7890',
             allowedHosts: ['example.test'],
             blockedHosts: ['private.test'],
             requireApproval: 'always',
@@ -182,10 +183,14 @@ describe('settings real HTTP router', () => {
             maxChars: 4000
         };
         expect((await request('web', 'PUT', config)).data).toEqual(config);
+        await request('web', 'PUT', { proxyUrl: 'http://user:password@proxy.example:7890' }, 400);
+        await request('import', 'POST', { web: { proxyUrl: 'http://proxy.example:7890' } });
+        expect((await request('export')).data).not.toHaveProperty('web.proxyUrl');
         expect((await request('web')).data).toEqual(config);
         const result = (await request('web/test', 'POST', { url: ' https://example.test/page ' })).data;
         expect(result).toEqual({ ok: true, detail: 'Page · 4 字符', ms: expect.any(Number) });
         expect(external.fetchPage).toHaveBeenLastCalledWith('https://example.test/page', {
+            proxyUrl: config.proxyUrl,
             allowedHosts: config.allowedHosts,
             blockedHosts: config.blockedHosts,
             timeoutMs: 1200,

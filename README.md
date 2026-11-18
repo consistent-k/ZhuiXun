@@ -310,6 +310,12 @@ curl http://localhost:31001/health    # 检查后端是否运行（应返回 ok 
 
 后端 `createAgentUIStreamResponse` 已配置 `onError` 钩子透传真实错误；若仍看不到细节，检查「设置」或 `~/.zhuixun/settings.json` 中 LLM API Key 是否正确，以及 `/health` 的 `mcp` 字段是否为 `ok`/`degraded`。
 
+### WebFetch 代理
+
+在「设置 → Web 访问」填写可信 HTTP(S) 代理地址（无用户名和密码），并在允许列表逐行填写目标域名。代理模式只访问明确列出的 HTTPS 域名，重定向同样受限，目标域名由代理解析。若本机网络使用 Fake-IP，这可以避开本机的合成地址。
+
+例如，AI SDK 定时检查可填写 `registry.npmjs.org` 和 `raw.githubusercontent.com`。保存后可在同一页面测试 URL。代理地址留空时使用直连，WebFetch 会校验并固定公网 IP。代理地址属于本机配置，不参与导入导出。
+
 ## 安全考虑
 
 1. **API Key / 密钥存储**：模型 apiKey 存于本地 `~/.zhuixun/settings.json`（明文、gitignore、文件权限 0600、永不回传前端）；MCP 密钥通过 `${VAR}` 占位符注入 `.mcp.json`，均不进版本库。

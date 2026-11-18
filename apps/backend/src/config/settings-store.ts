@@ -131,6 +131,7 @@ export interface PersonaSettings {
 export interface WebSettings {
     enabled?: boolean;
     fetchEnabled?: boolean;
+    proxyUrl?: string;
     allowedHosts?: string[];
     blockedHosts?: string[];
     requireApproval?: WebApprovalPolicy;
@@ -143,6 +144,7 @@ export interface WebSettings {
 export const WEB_DEFAULTS: Required<WebSettings> = {
     enabled: true,
     fetchEnabled: true,
+    proxyUrl: '',
     allowedHosts: [],
     blockedHosts: [],
     requireApproval: 'never',
@@ -663,12 +665,22 @@ function normalizeHosts(value: unknown): string[] {
     return out;
 }
 
+/** 代理地址会经设置 API 下发，因此这里只接受不含凭据的 HTTP(S) origin。 */
+export function isValidWebProxyUrl(value: string): boolean {
+    if (!value) return true;
+    if (!/^https?:\/\/[^/?#@\\\s]+\/?$/i.test(value)) return false;
+    const url = URL.parse(value);
+    return !!url?.hostname && url.pathname === '/';
+}
+
 /** 读取 Web 访问配置（含默认值兜底与区间 clamp）。 */
 export function getWebSettings(): Required<WebSettings> {
     const w = getSettings().web ?? {};
+    const proxyUrl = typeof w.proxyUrl === 'string' ? w.proxyUrl.trim() : '';
     return {
         enabled: typeof w.enabled === 'boolean' ? w.enabled : WEB_DEFAULTS.enabled,
         fetchEnabled: typeof w.fetchEnabled === 'boolean' ? w.fetchEnabled : WEB_DEFAULTS.fetchEnabled,
+        proxyUrl: isValidWebProxyUrl(proxyUrl) ? proxyUrl : WEB_DEFAULTS.proxyUrl,
         allowedHosts: normalizeHosts(w.allowedHosts),
         blockedHosts: normalizeHosts(w.blockedHosts),
         requireApproval: w.requireApproval === 'always' ? 'always' : 'never',
@@ -685,6 +697,7 @@ export function updateWebSettings(patch: WebSettings): Required<WebSettings> {
     const merged: WebSettings = {
         enabled: patch.enabled ?? current.enabled,
         fetchEnabled: patch.fetchEnabled ?? current.fetchEnabled,
+        proxyUrl: patch.proxyUrl?.trim() ?? current.proxyUrl,
         allowedHosts: patch.allowedHosts !== undefined ? normalizeHosts(patch.allowedHosts) : current.allowedHosts,
         blockedHosts: patch.blockedHosts !== undefined ? normalizeHosts(patch.blockedHosts) : current.blockedHosts,
         requireApproval: patch.requireApproval ?? current.requireApproval,
@@ -720,13 +733,14 @@ function filterSensitiveEnv(env: Record<string, string>): Record<string, string>
 export function exportSettings(): AppSettings {
     const { providers, activeModel } = getModelSettings();
     const settings = getSettings();
+    const { proxyUrl: _proxyUrl, ...web } = settings.web ?? {};
     return {
         model: { providers: providers.map((p) => ({ ...p, apiKey: '' })), activeModel },
         env: Object.fromEntries(Object.keys(settings.env ?? {}).map((key) => [key, ''])),
         app: settings.app ?? {},
         persona: settings.persona ?? {},
         memory: settings.memory ?? {},
-        web: settings.web ?? {}
+        web
     };
 }
 
@@ -766,6 +780,8 @@ export function importSettings(incoming: AppSettings): void {
     // 修复：此前用只含 model/env/app/persona/hooks 的新对象整体替换 cache，
     // 导入一次就会清空 channels/skillhub/memory/web 段（连「导出再原样导回」都会丢配置）。
     // 改为以当前配置为底逐段覆盖。
+    // 可信代理属于本机出网配置，导入文件不能启用或更换。
+    const { proxyUrl: _proxyUrl, ...web } = incoming.web ?? {};
     const merged: AppSettings = {
         ...settings,
         model: { providers: [...byName.values()], activeModel: incoming.model?.activeModel ?? current.activeModel },
@@ -773,7 +789,7 @@ export function importSettings(incoming: AppSettings): void {
         app: { ...(settings.app ?? {}), ...(incoming.app ?? {}) },
         persona: incoming.persona ?? settings.persona,
         memory: { ...(settings.memory ?? {}), ...(incoming.memory ?? {}) },
-        web: { ...(settings.web ?? {}), ...(incoming.web ?? {}) }
+        web: { ...(settings.web ?? {}), ...web }
     };
     cache = merged;
     persist(merged);

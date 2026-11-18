@@ -16,6 +16,7 @@ import type { ModelMessage } from 'ai';
 import { createStepCompactor } from '@/agent/compaction';
 import { buildInstructionParts, type InstructionParts } from '@/agent/context/builder';
 import {
+    buildBackgroundInstructions,
     buildChannelInstructions,
     buildProgressiveInstructions,
     buildRoutedInstructions,
@@ -974,14 +975,15 @@ export type AutomationRunFn = (
 ) => Promise<AutomationRunResult>;
 
 /**
- * 自动化任务（定时触发）headless 执行工厂。
+ * 定时任务与后台 Job 的 headless 执行工厂。
  *
- * 与 createChannelRunAgent 同一套**无人值守安全底线**（MCP 工具 + 白名单技能工具 + 只读技能元工具，
- * 不挂 Bash/Write/交互/记忆；`hasUi:false` 使策略/hook 的 ask 一律拒绝、deny 恒生效）。
- * **防递归自派生**：这里刻意不挂任何 Cron*（automation-tools）工具，定时任务执行轮无法再创建/改调度任务。
- * 区别在于：调度器需要最终结论落库，故用 `agent.generate()` 取 `result.text`，而非返回 UI 流。
+ * 不挂终端、文件、交互和 Cron/Job/Goal 工具。定时任务可使用受控 Web 抓取与记忆读写，
+ * Job 沿用原有工具集。复用审批管线并声明没有确认 UI。
  */
-export function createAutomationRunAgent(registry: SkillRegistry, allowedSkills?: string[]): AutomationRunFn {
+export function createAutomationRunAgent(
+    registry: SkillRegistry,
+    { kind = 'automation', allowedSkills }: { kind?: 'automation' | 'job'; allowedSkills?: string[] } = {}
+): AutomationRunFn {
     return async (prompt, opts) => {
         const config = activeModel();
         if (!config || !config.apiKey) throw new Error('未配置激活模型，无法执行自动化任务');
@@ -1001,8 +1003,14 @@ export function createAutomationRunAgent(registry: SkillRegistry, allowedSkills?
         }
         const metaTools = createSkillTools(registry, { getAvailableTools: () => tools }) as ToolSet;
         const tools: ToolSet = { ...metaTools, ...mcpTools, ...skillTools };
+        if (kind === 'automation') {
+            // 定时检查可用受控抓取替代 curl，并用全局记忆保存进度，只挂载读写能力。
+            Object.assign(tools, createWebToolsSafely());
+            const { read_memory, write_memory } = await memoryTools({ sessionId: opts.sessionId });
+            if (read_memory && write_memory) Object.assign(tools, { read_memory, write_memory });
+        }
 
-        const instructions = [buildChannelInstructions(registry.getCatalog()), buildRuntimeContext()]
+        const instructions = [buildBackgroundInstructions(registry.getCatalog(), kind), buildRuntimeContext()]
             .filter((section): section is string => !!section)
             .join('\n\n');
 

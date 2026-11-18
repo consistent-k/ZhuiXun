@@ -176,7 +176,7 @@ export async function initializeServices(channelPlugins?: Readonly<Record<string
 
     // 后台任务（P1）：入队 → 受限 headless 执行 → 结果落库 → 完成后唤醒 owner 会话。
     const jobService = createJobService({
-        runAgent: createAutomationRunAgent(registry),
+        runAgent: createAutomationRunAgent(registry, { kind: 'job' }),
         conversations: getConversationStore(),
         emit: (job) => sessionEvents.emit({ type: 'job', job }),
         deliver: (sessionId, text, source) => {

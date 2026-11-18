@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as ProviderModule from '@/agent/model/provider';
-import { addProvider, deleteProvider, listProviders, setActiveModel, updateAppSettings } from '@/config/settings-store';
+import {
+    addProvider,
+    deleteProvider,
+    listProviders,
+    setActiveModel,
+    updateAppSettings,
+    updateMemorySettings,
+    updateWebSettings
+} from '@/config/settings-store';
 import { setGoalService, type GoalService } from '@/modules/goal';
 import { setJobService, type JobService } from '@/modules/jobs';
 import { getPermissionStore } from '@/modules/permission';
@@ -49,6 +57,8 @@ beforeEach(async () => {
     });
     setActiveModel('scenario/scripted');
     updateAppSettings({ maxAgentSteps: 10, repeatErrorLimit: 3, autoCompactEnabled: false });
+    updateMemorySettings({ enabled: true });
+    updateWebSettings({ enabled: true, fetchEnabled: true });
     await getPermissionStore().setRules({ deny: [], ask: [], allow: [] });
 });
 
@@ -64,16 +74,19 @@ function toolNamesOf(call: number): string[] {
 }
 
 describe('scenario: unattended automation run', () => {
-    it('不挂 Bash/Write/交互/记忆，也不挂 Cron/Job/Goal 工具（防递归与自驱）', async () => {
+    it('使用定时任务提示词，挂载受控抓取和记忆读写，同时保留无人值守工具边界', async () => {
         const { createAutomationRunAgent } = await import('@/modules/chat/agents/runner');
-        useScript([{ text: '执行完成' }]);
+        const model = useScript([{ text: '执行完成' }]);
         const run = createAutomationRunAgent(fakeRegistry());
         const result = await run('整理今天的待办', {});
 
         // generate 走 doGenerate（helper 固定返回「场景测试」），这里只关心能力面与「能跑完」。
         expect(result.text).toBeTruthy();
+        const instructions = JSON.stringify(model.doGenerateCalls[0]?.prompt);
+        expect(instructions).toContain('定时任务执行约束');
+        expect(instructions).not.toContain('渠道模式约束');
         const tools = toolNamesOf(0);
-        // 只读元工具（load_skill/list_skills）可以有，危险能力一个都不能有。
+        expect(tools).toEqual(expect.arrayContaining(['WebFetch', 'read_memory', 'write_memory']));
         for (const forbidden of [
             'Bash',
             'Write',
@@ -82,6 +95,7 @@ describe('scenario: unattended automation run', () => {
             'Grep',
             'Glob',
             'LS',
+            'delete_memory',
             'askUserQuestion',
             'Task',
             'CronCreate',
@@ -94,13 +108,23 @@ describe('scenario: unattended automation run', () => {
         }
     });
 
-    it('模型调用不存在的工具时不会获得危险能力，最终仍以文本结束', async () => {
+    it('关闭 Web 和记忆设置后，定时任务不挂载相应工具', async () => {
         const { createAutomationRunAgent } = await import('@/modules/chat/agents/runner');
-        useScript([{ toolCalls: [{ name: 'Bash', input: { command: 'rm -rf /' } }] }, { text: '无法执行该操作' }]);
+        updateMemorySettings({ enabled: false });
+        updateWebSettings({ fetchEnabled: false });
+        useScript([{ text: '执行完成' }]);
         const run = createAutomationRunAgent(fakeRegistry());
-        const result = await run('尝试执行危险命令', {});
-        expect(result.text).toBeTruthy();
-        expect(toolNamesOf(1)).not.toContain('Bash');
+        await run('整理今天的待办', {});
+        expect(toolNamesOf(0)).toEqual(['load_skill', 'list_skills']);
+    });
+
+    it('Job 使用后台任务提示词与原有工具集', async () => {
+        const { createAutomationRunAgent } = await import('@/modules/chat/agents/runner');
+        const model = useScript([{ text: '执行完成' }]);
+        const run = createAutomationRunAgent(fakeRegistry(), { kind: 'job' });
+        await run('整理今天的待办', {});
+        expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain('后台任务执行约束');
+        expect(toolNamesOf(0)).toEqual(['load_skill', 'list_skills']);
     });
 });
 

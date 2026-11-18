@@ -52,6 +52,7 @@ export function createWebTools(): ToolSet {
                     const page = await fetchReadablePage(url, {
                         allowedHosts: settings.allowedHosts,
                         blockedHosts: settings.blockedHosts,
+                        proxyUrl: settings.proxyUrl,
                         timeoutMs: settings.timeoutMs,
                         maxBytes: settings.maxBytes,
                         maxChars: maxChars ?? settings.maxChars

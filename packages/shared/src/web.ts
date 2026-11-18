@@ -11,6 +11,8 @@ export interface WebSettingsView {
     enabled: boolean;
     /** WebFetch 开关（总开关开启时仍可单独关闭抓取）。 */
     fetchEnabled: boolean;
+    /** 用户显式配置的 HTTP(S) 代理地址，空串表示直连。 */
+    proxyUrl: string;
     /** 允许访问的域名；非空时即为白名单（支持 `*.example.com`）。 */
     allowedHosts: string[];
     /** 禁止访问的域名，优先于白名单。 */

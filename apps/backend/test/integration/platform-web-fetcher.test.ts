@@ -86,6 +86,11 @@ class FakeRequest extends EventEmitter {
 }
 
 const policy: FetchPolicy = { allowedHosts: [], blockedHosts: [], timeoutMs: 500, maxBytes: 1024 };
+const proxyPolicy: FetchPolicy = {
+    ...policy,
+    proxyUrl: 'http://127.0.0.1:7890',
+    allowedHosts: ['registry.npmjs.org']
+};
 let replies: Reply[];
 let requests: FakeRequest[];
 
@@ -113,6 +118,31 @@ afterEach(() => {
 });
 
 describe('platform web fetcher: raw transport and pinned addresses', () => {
+    it('uses the configured HTTPS proxy agent without resolving the destination locally', async () => {
+        replies.push({});
+        await expect(requestUrl('https://registry.npmjs.org/ai/latest', proxyPolicy)).resolves.toMatchObject({
+            status: 200
+        });
+        expect(dns.lookup).not.toHaveBeenCalled();
+        expect(requests[0].options.lookup).toBeUndefined();
+        expect(requests[0].options.agent).toBeInstanceOf(https.Agent);
+    });
+
+    it('only proxies explicitly listed HTTPS destinations, including after redirects', async () => {
+        await expect(
+            requestUrl('https://registry.npmjs.org/', { ...proxyPolicy, allowedHosts: ['*'] })
+        ).rejects.toMatchObject({ code: 'BLOCKED_HOST' });
+        await expect(requestUrl('http://registry.npmjs.org/', proxyPolicy)).rejects.toMatchObject({
+            code: 'INVALID_URL'
+        });
+        expect(requests).toHaveLength(0);
+        replies.push({ status: 302, headers: { location: 'https://outside.example/' } });
+        await expect(requestUrl('https://registry.npmjs.org/', proxyPolicy)).rejects.toMatchObject({
+            code: 'BLOCKED_HOST'
+        });
+        expect(requests).toHaveLength(1);
+    });
+
     it('uses GET over HTTPS with original host and DNS-pinned lookup in both Node callback shapes', async () => {
         replies.push({ headers: { 'content-type': [' Text/Plain ; charset="UTF-8"; other=x'] } });
         const response = await requestUrl('https://public.example/a?q=1', policy);
