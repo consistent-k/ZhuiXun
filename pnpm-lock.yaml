@@ -289,7 +289,7 @@ importers:
         version: 4.0.39
       '@ai-sdk/provider-utils':
         specifier: ^5.0.81
-        version: 5.0.81(zod@4.6.7)
+        version: 5.0.83(zod@4.6.7)
       '@hono/node-server':
         specifier: ^2.1.8
         version: 2.1.8(hono@4.13.18)
