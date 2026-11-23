@@ -21,7 +21,7 @@
     },
     "dependencies": {
         "@ai-sdk/anthropic": "^4.0.105",
-        "@ai-sdk/google": "4.0.121",
+        "@ai-sdk/google": "4.0.124",
         "@ai-sdk/mcp": "^2.0.99",
         "@ai-sdk/openai": "^4.0.118",
         "@ai-sdk/openai-compatible": "^3.0.92",
