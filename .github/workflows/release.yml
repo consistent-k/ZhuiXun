@@ -43,7 +43,7 @@ jobs:
                       exit 1
                   fi
             - if: github.event_name == 'push'
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-notes
                   path: release-notes.md
@@ -90,7 +90,7 @@ jobs:
             - run: pnpm --filter @zhuixun/backend bundle
             - run: pnpm --filter @zhuixun/desktop build
             - run: pnpm --filter @zhuixun/desktop exec electron-builder ${{ matrix.target }} --publish never
-            - uses: actions/upload-artifact@v4
+            - uses: actions/upload-artifact@v7
               with:
                   name: desktop-${{ matrix.artifact }}
                   path: ${{ matrix.assets }}
@@ -103,10 +103,10 @@ jobs:
         permissions:
             contents: write
         steps:
-            - uses: actions/download-artifact@v5
+            - uses: actions/download-artifact@v8
               with:
                   name: release-notes
-            - uses: actions/download-artifact@v5
+            - uses: actions/download-artifact@v8
               with:
                   pattern: desktop-*
                   path: assets
