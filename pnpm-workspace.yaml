@@ -12,7 +12,7 @@ allowBuilds:
 minimumReleaseAge: 0
 
 overrides:
-    'dompurify@>=3.4.4 <3.4.17': '3.4.17'
+    'dompurify@>=3.4.4 <3.4.17': '3.5.0'
     'body-parser@>=2 <2.4.0': '2.4.0'
     'undici@6': '^6.29.1'
     'undici@7': '^7.30.1'
