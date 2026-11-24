@@ -67,6 +67,7 @@ import {
 import { buildPersonaSection } from '@/modules/persona';
 import type { SkillRegistry } from '@/modules/skills';
 import { getTaskStore } from '@/modules/tasks';
+import { createWorkspaceTools } from '@/modules/workspace';
 import { createLogger } from '@/platform/logging/index';
 import { buildPrefixedToolName } from '@/platform/tool-naming';
 
@@ -88,6 +89,7 @@ const CHANNEL_MAX_STEPS = 20;
 export interface AgentWorkspace {
     /** 主工作目录（会话 shell cwd）；缺省走临时工作区 */
     primaryDir?: string;
+    temporaryDir?: string;
     /** 附加工作目录（primary 之外、探活通过的绝对路径） */
     additionalDirs?: string[];
     /** 失活根提示（主根失效回落 / 附加根被丢弃），注入系统提示词告知模型 */
@@ -161,7 +163,7 @@ export function buildToolApproval(
     const danger = isDangerouslySkipPermissions();
     const mode = opts.approvalMode;
     const policyCtx: PolicyContext = {
-        cwd: workspace?.primaryDir ?? WORKSPACE_DIR,
+        cwd: workspace?.primaryDir ?? workspace?.temporaryDir ?? WORKSPACE_DIR,
         isMcpTool: (name) => opts.mcpToolNames?.has(name) ?? false
     };
     const engine = getPolicyEngine();
@@ -327,6 +329,7 @@ async function createShellToolsSafely(
         const { enabled, disabled } = registry.getUserSkillDirNames();
         return await createShellTools(registry.getSkillsDir(), {
             primaryDir: workspace?.primaryDir,
+            temporaryDir: workspace?.temporaryDir,
             additionalDirs: workspace?.additionalDirs,
             enabledSkillDirs: enabled,
             disabledSkillDirs: disabled,
@@ -383,7 +386,7 @@ function bindActionReview(
     const review = createActionReview({
         model,
         request: runtime.approvalRequest,
-        cwd: workspace?.primaryDir ?? WORKSPACE_DIR,
+        cwd: workspace?.primaryDir ?? workspace?.temporaryDir ?? WORKSPACE_DIR,
         signal: runtime.signal
     });
     // Bash 是常规权限确认项。显式策略和 hook 的确认仍由管线处理，项目写入继续核验文件身份。
@@ -392,7 +395,7 @@ function bindActionReview(
 
 /** 默认工作区模式下技能副本所在目录（与 createShellTools 的 cwd 一致）；项目模式不 seed 技能，返回 undefined。 */
 function skillWorkspaceDir(workspace?: AgentWorkspace): string | undefined {
-    return workspace?.primaryDir ? undefined : WORKSPACE_DIR;
+    return workspace?.primaryDir ? undefined : (workspace?.temporaryDir ?? WORKSPACE_DIR);
 }
 
 /**
@@ -481,6 +484,7 @@ export async function createRoutedAgent(
         ...memTools,
         ...interactionTools,
         ...taskTools,
+        ...createWorkspaceTools(sessionId, turnId),
         ...automationTools,
         ...jobTools,
         ...goalTools,
@@ -838,6 +842,7 @@ export async function createProgressiveAgent(
                 ...memTools,
                 ...interactionTools,
                 ...taskTools,
+                ...createWorkspaceTools(sessionId, turnId),
                 ...automationTools,
                 ...jobTools,
                 ...goalTools,

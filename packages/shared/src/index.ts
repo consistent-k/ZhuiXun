@@ -73,3 +73,4 @@ export type {
 export type { ModelMeta, ProviderKind, ProviderView } from './model';
 export type { PersonaConfigView, PersonaCreateInput, PersonaKind, PersonaUpdateInput, PersonaView } from './persona';
 export type { WebApprovalPolicy, WebSettingsPatch, WebSettingsView } from './web';
+export type { WorkspaceFileReference, WorkspaceSummary, WorkspaceFileView } from './workspace';

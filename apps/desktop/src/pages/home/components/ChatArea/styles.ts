@@ -9,8 +9,10 @@ const useStyles = createStyles(({ css }) => {
             flexDirection: 'column',
             background: colors.canvas,
             minWidth: 0,
+            // 内嵌分栏中允许聊天区收缩，让长消息在列表内滚动。
+            minHeight: 0,
             '--chat-column-width': '760px',
-            '--chat-gutter': 'clamp(24px, 4vw, 56px)',
+            '--chat-gutter': 'clamp(16px, 2vw, 24px)',
 
             '& > .zhuixun-page-header': {
                 minHeight: 56,
@@ -30,6 +32,7 @@ const useStyles = createStyles(({ css }) => {
             },
 
             '& .chat-area-composer': {
+                flexShrink: 0,
                 minWidth: 0
             },
 
@@ -38,7 +41,7 @@ const useStyles = createStyles(({ css }) => {
                     display: 'grid',
                     gridTemplateColumns: 'minmax(0, 1fr) 360px',
                     gridTemplateRows: 'minmax(0, 1fr) auto',
-                    '--chat-gutter': '32px',
+                    '--chat-gutter': '24px',
 
                     '& > .approval-dock': {
                         gridColumn: 2,

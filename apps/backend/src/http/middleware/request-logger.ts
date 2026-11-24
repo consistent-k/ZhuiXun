@@ -21,5 +21,7 @@ export async function httpLogger(c: Context, next: Next): Promise<void> {
 
     const status = c.res.status;
     const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
-    requestLogger.child({ module: 'HTTP' })[level](`${c.req.method} ${c.req.path} ${status} ${durationMs}ms`);
+    // 一次性下载能力不能进入日志，避免在有效期内被复用。
+    const logPath = c.req.path.startsWith('/workspace-download/') ? '/workspace-download/[redacted]' : c.req.path;
+    requestLogger.child({ module: 'HTTP' })[level](`${c.req.method} ${logPath} ${status} ${durationMs}ms`);
 }

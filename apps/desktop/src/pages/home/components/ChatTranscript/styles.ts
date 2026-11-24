@@ -17,6 +17,8 @@ const useStyles = createStyles(({ css }) => {
             flex: 1,
             minHeight: 0,
             overflowY: 'auto',
+            scrollbarWidth: 'none',
+            '&::-webkit-scrollbar': { display: 'none' },
             // 横向溢出裁掉而不是出滚动条：流式中表格撑宽时不会让垂直滚动区抖动
             overflowX: 'clip',
             // 关闭浏览器原生滚动锚定：跟随位置统一由弹簧动画管理，避免两套机制互相修正
@@ -31,7 +33,7 @@ const useStyles = createStyles(({ css }) => {
             width: '100%',
             maxWidth: 'calc(var(--chat-column-width) + 2 * var(--chat-gutter))',
             marginInline: 'auto',
-            padding: `${spacing.lg}px var(--chat-gutter)`
+            padding: `${spacing.sm}px var(--chat-gutter)`
         },
 
         '& .chat-transcript-loading': {

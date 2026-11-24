@@ -1,46 +1,36 @@
-import {
-    CopyOutlined,
-    FileTextOutlined,
-    FolderOpenOutlined,
-    ThunderboltOutlined,
-    UndoOutlined
-} from '@ant-design/icons';
+import { CopyOutlined, ThunderboltOutlined, UndoOutlined } from '@ant-design/icons';
 import type { CommandPartData, TurnStopReason } from '@zhuixun/shared';
 import { getToolName, type UIMessage } from 'ai';
-import { App, Button, Drawer, Popconfirm, Popover, Tag } from 'antd';
-import { memo, useMemo, useState, type ReactNode } from 'react';
+import { App, Button, Popconfirm, Popover, Tag } from 'antd';
+import { memo, useMemo, type ReactNode } from 'react';
 
 import { SUCCESS_CODE } from '@/constant/code';
 import { rewindConversationApi } from '@/services';
 import { useChatStore } from '@/stores';
 import { chatRegistry } from '@/stores/chatRegistry';
+import { useWorkspacePanelStore } from '@/stores/workspacePanelStore';
 
 import { ActivityGroup } from '../activity/ActivityGroup';
 import { buildTimeline } from '../activity/model';
-import { TimelineToolItem } from '../activity/TimelineToolItem';
 import { AskQuestionCard } from '../AskQuestionCard';
 import { useChatActions, usePendingQuestionIds } from '../chat-context';
 import { LoopGuardNotice } from '../LoopGuardNotice';
 import { StreamingMarkdown } from '../StreamingMarkdown';
 import { TaskListCard } from '../TaskListCard';
 import { ThinkingBlock } from '../ThinkingBlock';
+import { FileTurnContext, parseFileReference } from '../WorkspacePanel/file-reference';
+import { FileReference } from '../WorkspacePanel/FileReference';
 
 import useStyles from './styles';
 
 /** 渲染单个附件 file part：图片直接缩略展示，其它类型（PDF 等）给可点击下载的文件条。 */
 function renderFilePart(part: { mediaType?: string; url?: string; filename?: string }, key: string): ReactNode {
     if (!part.url) return null;
-    if (part.mediaType?.startsWith('image/')) {
-        return (
-            <a key={key} className="message-item-image-link" href={part.url} target="_blank" rel="noreferrer">
-                <img className="message-item-image" src={part.url} alt={part.filename || '图片'} />
-            </a>
-        );
-    }
+    const reference = parseFileReference(part.url);
+    if (reference) return <FileReference key={key} reference={{ ...reference, name: part.filename ?? '附件' }} />;
     return (
-        <a key={key} className="message-item-file" href={part.url} target="_blank" rel="noreferrer">
-            <FileTextOutlined />
-            <span>{part.filename || '文件'}</span>
+        <a key={key} href={part.url} target="_blank" rel="noreferrer">
+            {part.filename ?? '文件'}
         </a>
     );
 }
@@ -71,13 +61,17 @@ export const MessageRow = memo(function MessageRow({ message, streaming, isLast,
     const actions = useChatActions();
     const pendingQuestionIds = usePendingQuestionIds();
     const currentConversationId = useChatStore((s) => s.currentConversationId);
+    const storedMessages = useChatStore((state) => state.messagesById[currentConversationId ?? '']);
+    const turnId = useMemo(() => {
+        let turn: string | undefined;
+        for (const item of storedMessages ?? []) {
+            if (item.role === 'user') turn = item.id;
+            if (item.id === message.id) break;
+        }
+        return turn;
+    }, [storedMessages, message.id]);
     const isUser = message.role === 'user';
-    const [resultsOpen, setResultsOpen] = useState(false);
     const timeline = useMemo(() => (isUser ? [] : buildTimeline(message.parts)), [isUser, message.parts]);
-    const results = timeline.flatMap((node) =>
-        node.kind === 'work' ? node.items.filter((item) => item.part.state === 'output-available') : []
-    );
-    const files = message.parts.filter((part) => part.type === 'file');
 
     /** 回滚到本条用户消息：还原该轮及其后 Write/Edit 触碰的文件，并把对话截断到此。 */
     const handleRewind = async () => {
@@ -85,6 +79,7 @@ export const MessageRow = memo(function MessageRow({ message, streaming, isLast,
         const res = await rewindConversationApi(currentConversationId, message.id);
         if (res.code !== SUCCESS_CODE || !res.data) return;
         await chatRegistry.reloadConversation(currentConversationId);
+        await useWorkspacePanelStore.getState().load(currentConversationId);
         const { restored, deleted, skipped } = res.data.files;
         messageApi.success(
             `已回滚：还原 ${restored.length} 个文件` +
@@ -139,86 +134,64 @@ export const MessageRow = memo(function MessageRow({ message, streaming, isLast,
     }
 
     return (
-        <div
-            className={cx('message-item', isUser ? 'message-item--user' : 'message-item--assistant', styles.toString())}
-            id={isUser ? `chat-request-${message.id}` : undefined}
-            tabIndex={isUser ? -1 : undefined}
-        >
-            <div className="message-item-main">
-                <div className="message-item-author">
-                    {!isUser && <img src="/favicon.svg" width={24} height={24} alt="" />}
-                    <span>{isUser ? '你' : '追寻'}</span>
-                </div>
-                <div
-                    className={cx(
-                        'message-item-bubble',
-                        isUser ? 'message-item-bubble--user' : 'message-item-bubble--assistant'
-                    )}
-                >
-                    {content}
-                </div>
-                {!isUser && !streaming && !busy && (results.length > 0 || files.length > 0) && (
-                    <div className="message-item-results">
-                        <Button type="text" icon={<FolderOpenOutlined />} onClick={() => setResultsOpen(true)}>
-                            查看结果 ·{' '}
-                            {[
-                                results.length ? `${results.length} 项工具输出` : '',
-                                files.length ? `${files.length} 个文件` : ''
-                            ]
-                                .filter(Boolean)
-                                .join('，')}
-                        </Button>
-                        <Drawer
-                            title="执行结果"
-                            open={resultsOpen}
-                            onClose={() => setResultsOpen(false)}
-                            destroyOnHidden
-                        >
-                            {files.length > 0 && (
-                                <div className={cx('message-results-files', styles.toString())}>
-                                    {files.map((file, index) => renderFilePart(file, `result-file-${index}`))}
-                                </div>
-                            )}
-                            {results.map((item) => (
-                                <TimelineToolItem key={item.toolCallId} item={item} />
-                            ))}
-                        </Drawer>
-                    </div>
+        <FileTurnContext.Provider value={turnId}>
+            <div
+                className={cx(
+                    'message-item',
+                    isUser ? 'message-item--user' : 'message-item--assistant',
+                    styles.toString()
                 )}
-                {stopNotice}
-                {/* 操作条：用户/助手都常驻占位（高度恒定），保证每条消息结构一致、间距均匀；
-                    默认隐藏，悬停该条消息时淡入。回滚只对用户消息有意义。 */}
-                <div className="message-item-actions">
-                    <Button
-                        className="message-item-action-btn"
-                        type="text"
-                        size="small"
-                        icon={<CopyOutlined />}
-                        onClick={handleCopy}
+                id={isUser ? `chat-request-${message.id}` : undefined}
+                tabIndex={isUser ? -1 : undefined}
+            >
+                <div className="message-item-main">
+                    <div className="message-item-author">
+                        {!isUser && <img src="/favicon.svg" width={24} height={24} alt="" />}
+                        <span>{isUser ? '你' : '追寻'}</span>
+                    </div>
+                    <div
+                        className={cx(
+                            'message-item-bubble',
+                            isUser ? 'message-item-bubble--user' : 'message-item-bubble--assistant'
+                        )}
                     >
-                        复制
-                    </Button>
-                    {isUser && currentConversationId && (
-                        <Popconfirm
-                            title="回滚到此处"
-                            description="将撤销该消息之后的文件改动并截断对话，不可恢复"
-                            okText="回滚"
-                            cancelText="取消"
-                            onConfirm={handleRewind}
+                        {content}
+                    </div>
+                    {stopNotice}
+                    {/* 操作条：用户/助手都常驻占位（高度恒定），保证每条消息结构一致、间距均匀；
+                    默认隐藏，悬停该条消息时淡入。回滚只对用户消息有意义。 */}
+                    <div className="message-item-actions">
+                        <Button
+                            className="message-item-action-btn"
+                            type="text"
+                            size="small"
+                            icon={<CopyOutlined />}
+                            onClick={handleCopy}
                         >
-                            <Button
-                                className="message-item-action-btn"
-                                type="text"
-                                size="small"
-                                icon={<UndoOutlined />}
+                            复制
+                        </Button>
+                        {isUser && currentConversationId && (
+                            <Popconfirm
+                                title="回滚到此处"
+                                description="将撤销该消息之后的文件改动并截断对话，不可恢复"
+                                okText="回滚"
+                                cancelText="取消"
+                                onConfirm={handleRewind}
                             >
-                                回滚
-                            </Button>
-                        </Popconfirm>
-                    )}
+                                <Button
+                                    className="message-item-action-btn"
+                                    type="text"
+                                    size="small"
+                                    icon={<UndoOutlined />}
+                                >
+                                    回滚
+                                </Button>
+                            </Popconfirm>
+                        )}
+                    </div>
                 </div>
             </div>
-        </div>
+        </FileTurnContext.Provider>
     );
 });
 

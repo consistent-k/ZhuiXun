@@ -10,7 +10,6 @@ import { useChatActions, useChatRun } from '../chat-context';
 import { ChatTranscript } from '../ChatTranscript';
 import { GoalBanner } from '../GoalBanner';
 import { InputBox } from '../InputBox';
-import { TaskPanel } from '../TaskPanel';
 import { ToolLabelContext } from '../tool-label-context';
 import { useToolLabels } from '../useToolLabels';
 
@@ -111,9 +110,6 @@ export function ChatArea({
                     {title}
                 </span>
                 <div className="chat-area-actions">
-                    {!messagesLoading && (loading || pendingInteractionCount > 0) && (
-                        <TaskPanel key={conversationKey} />
-                    )}
                     {showPersonaSelect && (
                         <div className="chat-area-persona">
                             <SlidersOutlined aria-hidden />

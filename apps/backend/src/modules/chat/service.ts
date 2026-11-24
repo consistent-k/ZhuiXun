@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import type { ApprovalMode, SessionEventSource, SessionTurnOutcome } from '@zhuixun/shared';
 import {
@@ -24,6 +25,7 @@ import type { LoopStopReason } from '@/agent/loop/guard';
 import { createRetryHandler, describeModelError } from '@/agent/model/resilience';
 import { QuestionValidationError, validateQuestionMessages } from '@/agent/tools/question-validation';
 import { activeModel, modelByRef } from '@/config/model';
+import { WORKSPACE_DIR } from '@/config/shell';
 import type { ResolvedModel } from '@/config/types';
 import { normalizeAttachments } from '@/modules/chat/attachments/normalize';
 import { expandCommandParts } from '@/modules/chat/commands';
@@ -36,6 +38,14 @@ import { runMemoryMaintenance } from '@/modules/memory';
 import type { ProjectRoot } from '@/modules/projects';
 import { getProjectStore, resolveEffectiveRoots } from '@/modules/projects';
 import type { SkillRegistry } from '@/modules/skills';
+import {
+    beginWorkspace,
+    observeWorkspacePart,
+    pruneWorkspace,
+    readWorkspace,
+    subscribeWorkspace,
+    updateWorkspace
+} from '@/modules/workspace';
 import { createLogger } from '@/platform/logging/index';
 
 import {
@@ -432,6 +442,14 @@ export async function runChatTurn(
         const resolvedRoots = await resolveEffectiveRoots(sourceRoots);
         const workspace: AgentWorkspace = {
             primaryDir: resolvedRoots.primaryDir,
+            ...(resolvedRoots.primaryDir
+                ? {}
+                : {
+                      temporaryDir: path.join(
+                          WORKSPACE_DIR,
+                          sessionId && isValidConversationId(sessionId) ? sessionId : randomUUID()
+                      )
+                  }),
             additionalDirs: resolvedRoots.additionalDirs,
             warnings: resolvedRoots.warnings,
             trusted: project?.trusted,
@@ -480,6 +498,20 @@ export async function runChatTurn(
             );
         }
 
+        if (canResume && turnId) {
+            await pruneWorkspace(
+                chatId,
+                uiMessages.filter((m) => m.role === 'user').map((m) => m.id)
+            );
+            await beginWorkspace(
+                chatId,
+                turnId,
+                workspace.primaryDir ?? workspace.temporaryDir!,
+                [workspace.primaryDir, ...(workspace.additionalDirs ?? [])].filter((r): r is string => !!r),
+                !workspace.primaryDir
+            );
+        }
+
         // 首轮标题与主回答流并发生成，不阻塞流式。
         if (canResume) {
             void maybeGenerateFirstTurnTitle(store, chatId, expandedMessages, config, (t) => {
@@ -504,241 +536,304 @@ export async function runChatTurn(
         };
         const loopGuard = createTurnLoopGuard();
         // 每轮一个 hook 运行器：每次执行都重读配置与信任状态，hooks.json 被改后立即停止执行
-        const hooks = createHookRunner({ sessionId: chatId, projectId, cwd: workspace.primaryDir });
+        const hooks = createHookRunner({
+            sessionId: chatId,
+            projectId,
+            cwd: workspace.primaryDir ?? workspace.temporaryDir
+        });
 
         const stream = createUIMessageStream<UIMessage>({
             execute: async ({ writer }) => {
-                let streamMessages = modelMessages;
-                let compactionMarker: CompactionMarker | undefined;
-                let compactionUsageScope: string | undefined;
-
-                // ---------- compacting ----------
-                machine.to('compacting');
-                if (canResume) {
-                    try {
-                        const outcome = await maybeCompactContext({
-                            store,
-                            sessionId: chatId,
-                            messages: modelMessages,
-                            model: config,
-                            signal,
-                            onCompacting: () =>
-                                writer.write({
-                                    type: 'data-compaction',
-                                    data: { phase: 'start' },
-                                    transient: true
-                                })
-                        });
-                        streamMessages = outcome.modelInput;
-                        compactionMarker = outcome.marker;
-                        compactionUsageScope = outcome.usageScope;
-                    } catch (err) {
-                        log.warn('上下文压缩失败（忽略，使用全量历史）', { err });
+                const unsubscribeWorkspace = canResume
+                    ? subscribeWorkspace(chatId, (summary) => {
+                          writer.write({ type: 'data-workspace-summary', data: summary, transient: true });
+                      })
+                    : () => undefined;
+                try {
+                    if (canResume && turnId) {
+                        const initial = (await readWorkspace(chatId)).turns.find(
+                            (turn) => turn.summary.turnId === turnId
+                        )?.summary;
+                        if (initial) writer.write({ type: 'data-workspace-summary', data: initial, transient: true });
                     }
-                    if (compactionMarker) {
-                        writer.write({
-                            type: 'data-compaction',
-                            data: { phase: 'done', ...compactionMarker },
-                            transient: true
-                        });
-                    }
-                }
+                    let workspaceUpdates = Promise.resolve();
+                    let streamMessages = modelMessages;
+                    let compactionMarker: CompactionMarker | undefined;
+                    let compactionUsageScope: string | undefined;
 
-                // ---------- streaming ----------
-                machine.to('streaming');
-                const runtime = {
-                    loopGuard,
-                    hooks,
-                    approvalMode,
-                    // 只审查本轮用户原文。无文本的请求不会沿用上一轮的授权，slash 展开也不算授权。
-                    approvalRequest:
-                        approvalMode === 'auto-review' ? extractLatestUserText(uiMessages, true) : undefined,
-                    signal
-                };
-                const agent =
-                    agentMode === 'progressive'
-                        ? await createProgressiveAgent(
-                              registry,
-                              config,
-                              registry.getMCPAdapter(),
-                              registry.getMCPDiscovery(),
-                              sessionId,
-                              projectId,
-                              workspace,
-                              // 工具审批后续跑时据此预挂载历史里已动态加载过的技能/MCP 工具
-                              messages as HistoryMessage[],
-                              latestUserText,
-                              turnId,
-                              personaId,
-                              runtime
-                          )
-                        : await createRoutedAgent(
-                              registry,
-                              config,
-                              registry.getMCPAdapter(),
-                              sessionId,
-                              projectId,
-                              project?.skillPreset,
-                              workspace,
-                              latestUserText,
-                              turnId,
-                              personaId,
-                              runtime
-                          );
-
-                // 首输出前错误恢复链（重试复用同一 agent 实例）：
-                // 1) 超窗 → 用更激进的检查点重压一次再重试（仅合法会话，需读写检查点）；
-                // 2) 限流/过载/断连 → 退避重试，期间下发瞬态 data-retry 供前端展示「正在重试」。
-                const handlers: PreOutputRecoveryHandler[] = [];
-                if (canResume) {
-                    handlers.push(
-                        createOverflowHandler(async (options) => {
-                            try {
-                                const outcome = await reactiveCompactContext(
-                                    {
-                                        store,
-                                        sessionId: chatId,
-                                        messages: modelMessages,
-                                        model: config,
-                                        signal,
-                                        onCompacting: () =>
-                                            writer.write({
-                                                type: 'data-compaction',
-                                                data: { phase: 'start' },
-                                                transient: true
-                                            })
-                                    },
-                                    streamMessages
-                                );
-                                if (!outcome.changed) return null;
-                                streamMessages = outcome.modelInput;
-                                compactionUsageScope = outcome.usageScope;
-                                if (outcome.marker) {
-                                    compactionMarker = outcome.marker;
+                    // ---------- compacting ----------
+                    machine.to('compacting');
+                    if (canResume) {
+                        try {
+                            const outcome = await maybeCompactContext({
+                                store,
+                                sessionId: chatId,
+                                messages: modelMessages,
+                                model: config,
+                                signal,
+                                onCompacting: () =>
                                     writer.write({
                                         type: 'data-compaction',
-                                        data: { phase: 'done', ...outcome.marker },
+                                        data: { phase: 'start' },
                                         transient: true
+                                    })
+                            });
+                            streamMessages = outcome.modelInput;
+                            compactionMarker = outcome.marker;
+                            compactionUsageScope = outcome.usageScope;
+                        } catch (err) {
+                            log.warn('上下文压缩失败（忽略，使用全量历史）', { err });
+                        }
+                        if (compactionMarker) {
+                            writer.write({
+                                type: 'data-compaction',
+                                data: { phase: 'done', ...compactionMarker },
+                                transient: true
+                            });
+                        }
+                    }
+
+                    // ---------- streaming ----------
+                    machine.to('streaming');
+                    const runtime = {
+                        loopGuard,
+                        hooks,
+                        approvalMode,
+                        // 只审查本轮用户原文。无文本的请求不会沿用上一轮的授权，slash 展开也不算授权。
+                        approvalRequest:
+                            approvalMode === 'auto-review' ? extractLatestUserText(uiMessages, true) : undefined,
+                        signal
+                    };
+                    const agent =
+                        agentMode === 'progressive'
+                            ? await createProgressiveAgent(
+                                  registry,
+                                  config,
+                                  registry.getMCPAdapter(),
+                                  registry.getMCPDiscovery(),
+                                  sessionId,
+                                  projectId,
+                                  workspace,
+                                  // 工具审批后续跑时据此预挂载历史里已动态加载过的技能/MCP 工具
+                                  messages as HistoryMessage[],
+                                  latestUserText,
+                                  turnId,
+                                  personaId,
+                                  runtime
+                              )
+                            : await createRoutedAgent(
+                                  registry,
+                                  config,
+                                  registry.getMCPAdapter(),
+                                  sessionId,
+                                  projectId,
+                                  project?.skillPreset,
+                                  workspace,
+                                  latestUserText,
+                                  turnId,
+                                  personaId,
+                                  runtime
+                              );
+
+                    // 首输出前错误恢复链（重试复用同一 agent 实例）：
+                    // 1) 超窗 → 用更激进的检查点重压一次再重试（仅合法会话，需读写检查点）；
+                    // 2) 限流/过载/断连 → 退避重试，期间下发瞬态 data-retry 供前端展示「正在重试」。
+                    const handlers: PreOutputRecoveryHandler[] = [];
+                    if (canResume) {
+                        handlers.push(
+                            createOverflowHandler(async (options) => {
+                                try {
+                                    const outcome = await reactiveCompactContext(
+                                        {
+                                            store,
+                                            sessionId: chatId,
+                                            messages: modelMessages,
+                                            model: config,
+                                            signal,
+                                            onCompacting: () =>
+                                                writer.write({
+                                                    type: 'data-compaction',
+                                                    data: { phase: 'start' },
+                                                    transient: true
+                                                })
+                                        },
+                                        streamMessages
+                                    );
+                                    if (!outcome.changed) return null;
+                                    streamMessages = outcome.modelInput;
+                                    compactionUsageScope = outcome.usageScope;
+                                    if (outcome.marker) {
+                                        compactionMarker = outcome.marker;
+                                        writer.write({
+                                            type: 'data-compaction',
+                                            data: { phase: 'done', ...outcome.marker },
+                                            transient: true
+                                        });
+                                    }
+                                    const prompt = await convertToModelMessages(outcome.modelInput, {
+                                        tools: agent.tools
                                     });
+                                    const nextOptions = { ...options, prompt };
+                                    const retried = await agent.stream(
+                                        nextOptions as Parameters<typeof agent.stream>[0]
+                                    );
+                                    return { stream: retried.stream, options: nextOptions };
+                                } catch (err) {
+                                    log.warn('上下文超限后的反应式压缩失败', { err });
+                                    return null;
                                 }
-                                const prompt = await convertToModelMessages(outcome.modelInput, {
-                                    tools: agent.tools
+                            })
+                        );
+                    }
+                    handlers.push(
+                        createRetryHandler({
+                            onRetry: (event) => {
+                                log.warn('模型请求失败，准备重试', { chatId, ...event });
+                                writer.write({
+                                    type: 'data-retry',
+                                    data: { phase: 'start', ...event },
+                                    transient: true
                                 });
-                                const nextOptions = { ...options, prompt };
-                                const retried = await agent.stream(nextOptions as Parameters<typeof agent.stream>[0]);
-                                return { stream: retried.stream, options: nextOptions };
-                            } catch (err) {
-                                log.warn('上下文超限后的反应式压缩失败', { err });
-                                return null;
-                            }
+                            },
+                            onRecovered: () =>
+                                writer.write({ type: 'data-retry', data: { phase: 'done' }, transient: true })
                         })
                     );
-                }
-                handlers.push(
-                    createRetryHandler({
-                        onRetry: (event) => {
-                            log.warn('模型请求失败，准备重试', { chatId, ...event });
-                            writer.write({ type: 'data-retry', data: { phase: 'start', ...event }, transient: true });
-                        },
-                        onRecovered: () =>
-                            writer.write({ type: 'data-retry', data: { phase: 'done' }, transient: true })
-                    })
-                );
-                // 观察放在恢复层外：已被重试恢复的首输出前错误不会到这里，只看到最终下发的 part。
-                const reactiveAgent = withStreamObserver(withPreOutputRecovery(agent, handlers), (part) => {
-                    if (part.type === 'error') {
-                        failTurn(part.error);
-                    } else if (part.type === 'tool-error') {
-                        log.warn('工具调用出错，错误已交回模型', {
-                            chatId,
-                            toolName: part.toolName,
-                            toolCallId: part.toolCallId,
-                            err: part.error
-                        });
-                    }
-                });
-
-                // 只记录最后一步的 usage：它才代表本轮结束时的上下文大小。
-                // finish.totalUsage 是所有 step 的累加，多步工具轮会重复计算输入，不能用作压缩判阈基线。
-                let lastStepUsage: LanguageModelUsage | undefined;
-
-                const agentStream = await createAgentUIStream({
-                    agent: reactiveAgent,
-                    uiMessages: streamMessages,
-                    // 请求中止必须传至模型流；仅接收 signal 而不转交会让断开后的生成继续消耗资源。
-                    abortSignal: signal,
-                    messageMetadata: ({ part }) => {
-                        if (part.type === 'finish-step') {
-                            lastStepUsage = part.usage;
-                            return undefined;
+                    // 观察放在恢复层外：已被重试恢复的首输出前错误不会到这里，只看到最终下发的 part。
+                    const reactiveAgent = withStreamObserver(withPreOutputRecovery(agent, handlers), (part) => {
+                        if (canResume && turnId && (part.type === 'tool-result' || part.type === 'source')) {
+                            workspaceUpdates = workspaceUpdates
+                                .then(() => observeWorkspacePart(chatId, turnId, part))
+                                .catch((err) => log.warn('工作区摘要更新失败', { err }));
                         }
-                        if (part.type === 'finish') {
-                            const stopReason = resolveStopReason(loopGuard.state.stopReason, streamFailed);
-                            if (loopGuard.state.stopReason) {
-                                log.info('工具循环护栏截停', { chatId, ...loopGuard.state });
+                        if (part.type === 'error') {
+                            failTurn(part.error);
+                        } else if (part.type === 'tool-error') {
+                            log.warn('工具调用出错，错误已交回模型', {
+                                chatId,
+                                toolName: part.toolName,
+                                toolCallId: part.toolCallId,
+                                err: part.error
+                            });
+                        }
+                    });
+
+                    // 只记录最后一步的 usage：它才代表本轮结束时的上下文大小。
+                    // finish.totalUsage 是所有 step 的累加，多步工具轮会重复计算输入，不能用作压缩判阈基线。
+                    let lastStepUsage: LanguageModelUsage | undefined;
+
+                    const agentStream = await createAgentUIStream({
+                        agent: reactiveAgent,
+                        uiMessages: streamMessages,
+                        // 请求中止必须传至模型流；仅接收 signal 而不转交会让断开后的生成继续消耗资源。
+                        abortSignal: signal,
+                        messageMetadata: ({ part }) => {
+                            if (part.type === 'finish-step') {
+                                lastStepUsage = part.usage;
+                                return undefined;
                             }
-                            return {
-                                usage: toUsageMetadata(lastStepUsage ?? part.totalUsage),
-                                ...(compactionUsageScope ? { compactionUsageScope } : {}),
-                                ...(aiTitle ? { title: aiTitle } : {}),
-                                ...(compactionMarker ? { compaction: compactionMarker } : {}),
-                                ...(stopReason ? { stopReason, steps: loopGuard.state.steps } : {})
-                            };
-                        }
-                        return undefined;
-                    },
-                    generateMessageId: () => randomUUID(),
-                    // 轮结束（含审批暂停、出错、中断）落库：客户端已离开也不丢回复。
-                    onEnd: canResume
-                        ? async ({ messages: finalMessages, isAborted }) => {
-                              // SDK 在 abort part 后仍调用 onEnd，保留部分回复，但不能记成 completed。
-                              if (isAborted && machine.phase === 'streaming') machine.abort();
-                              const merged = mergeOriginalParts(uiMessages, finalMessages);
-                              // 出错/中止时 onError 可能已把状态推进到终态；此时仍要落库，但不再迁移。
-                              if (machine.phase === 'streaming' || machine.phase === 'compacting') {
-                                  machine.to('finalizing');
+                            if (part.type === 'finish') {
+                                const stopReason = resolveStopReason(loopGuard.state.stopReason, streamFailed);
+                                if (loopGuard.state.stopReason) {
+                                    log.info('工具循环护栏截停', { chatId, ...loopGuard.state });
+                                }
+                                return {
+                                    usage: toUsageMetadata(lastStepUsage ?? part.totalUsage),
+                                    ...(compactionUsageScope ? { compactionUsageScope } : {}),
+                                    ...(aiTitle ? { title: aiTitle } : {}),
+                                    ...(compactionMarker ? { compaction: compactionMarker } : {}),
+                                    ...(stopReason ? { stopReason, steps: loopGuard.state.steps } : {})
+                                };
+                            }
+                            return undefined;
+                        },
+                        generateMessageId: () => randomUUID(),
+                        // 轮结束（含审批暂停、出错、中断）落库：客户端已离开也不丢回复。
+                        onEnd: canResume
+                            ? async ({ messages: finalMessages, isAborted }) => {
+                                  // SDK 在 abort part 后仍调用 onEnd，保留部分回复，但不能记成 completed。
+                                  if (isAborted && machine.phase === 'streaming') machine.abort();
+                                  const merged = mergeOriginalParts(uiMessages, finalMessages);
+                                  // 出错/中止时 onError 可能已把状态推进到终态；此时仍要落库，但不再迁移。
+                                  if (machine.phase === 'streaming' || machine.phase === 'compacting') {
+                                      machine.to('finalizing');
+                                  }
+                                  const lastMessage = merged.at(-1);
+                                  const pending =
+                                      lastMessage?.role === 'assistant' &&
+                                      lastMessage.parts.some(
+                                          (part) =>
+                                              isToolUIPart(part) &&
+                                              (part.state === 'approval-requested' ||
+                                                  (getToolName(part) === 'askUserQuestion' &&
+                                                      part.state === 'input-available'))
+                                      )
+                                          ? { id: lastMessage.id, parts: lastMessage.parts }
+                                          : undefined;
+                                  await persistTurn(store, chatId, merged, {
+                                      projectId,
+                                      roots: sourceRoots,
+                                      personaId,
+                                      approvalTurn: approvalTurn ? { ...approvalTurn, pending } : undefined
+                                  });
+                                  await workspaceUpdates;
+                                  if (turnId)
+                                      await updateWorkspace(chatId, turnId, (turn) => {
+                                          turn.summary.status = pending
+                                              ? 'waiting'
+                                              : isAborted || loopGuard.state.stopReason
+                                                ? 'stopped'
+                                                : streamFailed
+                                                  ? 'failed'
+                                                  : 'completed';
+                                      });
+                                  unsubscribeWorkspace();
+                                  void runMemoryMaintenance({
+                                      transcript: toTranscript(merged),
+                                      projectId,
+                                      sessionId: chatId
+                                  }).catch((err) => {
+                                      // 维护是后台 best-effort，拒绝必须被观察，不能成为未处理 Promise。
+                                      log.warn('记忆维护失败（忽略）', { chatId, err });
+                                  });
+                                  if (machine.phase === 'finalizing') machine.to('completed');
+                                  // Stop hooks：fire-and-forget，仅通知 / 记录，不阻止结束
+                                  void hooks
+                                      .stop({
+                                          stopReason: resolveStopReason(loopGuard.state.stopReason, streamFailed),
+                                          lastAssistantText: lastAssistantText(merged)
+                                      })
+                                      .catch((err) => log.warn('Stop hooks 执行失败（忽略）', { chatId, err }));
+                                  // 会话忙闲收尾：onEnd 在正常结束、出错与中断时都会触发（含客户端断开）。
+                                  endSession(isAborted ? 'aborted' : streamFailed ? 'failed' : 'completed');
                               }
-                              const lastMessage = merged.at(-1);
-                              const pending =
-                                  lastMessage?.role === 'assistant' &&
-                                  lastMessage.parts.some(
-                                      (part) =>
-                                          isToolUIPart(part) &&
-                                          (part.state === 'approval-requested' ||
-                                              (getToolName(part) === 'askUserQuestion' &&
-                                                  part.state === 'input-available'))
-                                  )
-                                      ? { id: lastMessage.id, parts: lastMessage.parts }
-                                      : undefined;
-                              await persistTurn(store, chatId, merged, {
-                                  projectId,
-                                  roots: sourceRoots,
-                                  personaId,
-                                  approvalTurn: approvalTurn ? { ...approvalTurn, pending } : undefined
-                              });
-                              void runMemoryMaintenance({
-                                  transcript: toTranscript(merged),
-                                  projectId,
-                                  sessionId: chatId
-                              }).catch((err) => {
-                                  // 维护是后台 best-effort，拒绝必须被观察，不能成为未处理 Promise。
-                                  log.warn('记忆维护失败（忽略）', { chatId, err });
-                              });
-                              if (machine.phase === 'finalizing') machine.to('completed');
-                              // Stop hooks：fire-and-forget，仅通知 / 记录，不阻止结束
-                              void hooks
-                                  .stop({
-                                      stopReason: resolveStopReason(loopGuard.state.stopReason, streamFailed),
-                                      lastAssistantText: lastAssistantText(merged)
-                                  })
-                                  .catch((err) => log.warn('Stop hooks 执行失败（忽略）', { chatId, err }));
-                              // 会话忙闲收尾：onEnd 在正常结束、出错与中断时都会触发（含客户端断开）。
-                              endSession(isAborted ? 'aborted' : streamFailed ? 'failed' : 'completed');
-                          }
-                        : undefined,
-                    onError: toClientError
-                });
-                writer.merge(agentStream as unknown as ReadableStream<UIMessageChunk>);
+                            : undefined,
+                        onError: toClientError
+                    });
+                    // 顺序消费，确保 execute 出错时也释放摘要监听器，避免向已结束 writer 写入。
+                    try {
+                        const reader = (agentStream as unknown as ReadableStream<UIMessageChunk>).getReader();
+                        try {
+                            while (true) {
+                                const item = await reader.read();
+                                if (item.done) break;
+                                writer.write(item.value);
+                            }
+                        } finally {
+                            reader.releaseLock();
+                        }
+                    } finally {
+                        unsubscribeWorkspace();
+                    }
+                } catch (error) {
+                    if (canResume && turnId)
+                        await updateWorkspace(chatId, turnId, (turn) => {
+                            turn.summary.status = 'failed';
+                        });
+                    throw error;
+                } finally {
+                    unsubscribeWorkspace();
+                }
             },
             onError: (error) => {
                 failTurn(error);

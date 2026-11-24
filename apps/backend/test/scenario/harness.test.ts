@@ -12,16 +12,25 @@ import { WORKSPACE_DIR } from '@/config/shell';
 import { getCommandStore } from '@/modules/commands';
 import { getConversationStore } from '@/modules/conversations';
 import { getPermissionStore } from '@/modules/permission';
+import { readWorkspace } from '@/modules/workspace';
 
 import {
     approvalOf,
     expectStopReason,
     expectToolSequence,
-    runScenarioTurn,
+    runScenarioTurn as runRawScenarioTurn,
     scriptedModel,
     userMessage,
     type ScriptStep
 } from '../helpers/scenario';
+
+// 默认工作区按会话隔离；测试数据必须放进本次会话，不能从其他会话共享根读取。
+async function runScenarioTurn(...args: Parameters<typeof runRawScenarioTurn>) {
+    const dir = path.join(WORKSPACE_DIR, args[0].sessionId!);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'notes.md'), '病例笔记');
+    return runRawScenarioTurn(...args);
+}
 
 /**
  * Agent 行为回归（确定性场景）：脚本化模型 + 真实 runChatTurn / 审批管线 / 护栏 / 落库。
@@ -199,4 +208,30 @@ describe('scenario: model errors, slash commands and persistence', () => {
             expect(saved?.messages[0].content).toBe('/summary 今天的工作');
         });
     });
+});
+
+describe('scenario: workspace artifacts', () => {
+    it.each(['routed', 'progressive'] as const)(
+        'registers a deliverable and publishes final summary in %s mode',
+        async (agentMode) => {
+            const sessionId = randomUUID();
+            await fs.mkdir(path.join(WORKSPACE_DIR, sessionId), { recursive: true });
+            await fs.writeFile(path.join(WORKSPACE_DIR, sessionId, 'report.md'), '# 交付报告');
+            useScript([
+                { toolCalls: [{ name: 'register_artifact', input: { path: 'report.md' } }] },
+                { text: '已交付' }
+            ]);
+            const result = await runScenarioTurn({ sessionId, agentMode, messages: [userMessage('登记报告')] });
+            expect(approvalOf(result, 'register_artifact')).toBe('executed');
+            const [turn] = (await readWorkspace(sessionId)).turns;
+            expect(turn.summary.status).toBe('completed');
+            expect(turn.summary.artifacts).toHaveLength(1);
+            expect(result.chunks).toContainEqual(
+                expect.objectContaining({
+                    type: 'data-workspace-summary',
+                    data: expect.objectContaining({ status: 'completed' })
+                })
+            );
+        }
+    );
 });

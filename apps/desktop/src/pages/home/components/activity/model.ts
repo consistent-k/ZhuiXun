@@ -211,7 +211,7 @@ export function readString(record: Record<string, unknown>, keys: readonly strin
     return '';
 }
 
-export function buildTimeline(parts: UIMessage['parts']): TimelineNode[] {
+export function buildTimeline(parts: UIMessage['parts'] = []): TimelineNode[] {
     const nodes: TimelineNode[] = [];
     let bucket: ToolItem[] = [];
 

@@ -35,7 +35,8 @@ export function collectPendingInteractions(
     for (let i = start; i < messages.length; i += 1) {
         const message = messages[i];
         if (message.role !== 'assistant') continue;
-        for (const part of message.parts) {
+        // 旧会话的纯文本消息可能没有 parts。
+        for (const part of message.parts ?? []) {
             if (!isToolUIPart(part)) continue;
             const toolName = getToolName(part);
             if (part.state === 'approval-requested' && !part.approval.isAutomatic) {
