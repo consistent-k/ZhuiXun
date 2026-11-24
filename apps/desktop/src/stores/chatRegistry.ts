@@ -1,5 +1,5 @@
 import { Chat } from '@ai-sdk/react';
-import type { AskUserQuestionOutput, RetryNotice } from '@zhuixun/shared';
+import type { AskUserQuestionOutput, RetryNotice, WorkspaceSummary } from '@zhuixun/shared';
 import {
     DefaultChatTransport,
     isToolUIPart,
@@ -18,6 +18,7 @@ import { API_BASE_URL, authHeaders, desktopApprovalBridge } from '@/utils/reques
 import { useAppConfigStore } from './appConfigStore';
 import { useChatStore } from './chatStore';
 import { useProjectStore } from './projectStore';
+import { useWorkspacePanelStore } from './workspacePanelStore';
 
 /**
  * Chat 实例注册表：按会话 id 持有 AI SDK 的 `Chat` 实例，跨路由存活。
@@ -34,8 +35,8 @@ function toUIMessages(messages: Message[] | undefined): UIMessage[] {
     return (messages ?? []).map((msg) => ({
         id: msg.id,
         role: msg.role,
-        // 持久化保留的完整 parts（含工具调用）
-        parts: msg.parts,
+        // 旧版纯文本记录没有 parts，进入 SDK 前统一补为文本 part。
+        parts: msg.parts ?? [{ type: 'text', text: msg.content ?? '' }],
         // 还原 metadata（含本轮最后一步 usage），让历史会话切回后仍能展示 token 用量
         metadata: msg.metadata
     }));
@@ -175,7 +176,9 @@ function createChat(convId: string): Chat<UIMessage> {
         // transient part 不进消息历史，只经此回调投递。phase=start 进入压缩中，done 结束。
         // data-retry：首输出前限流/过载/断连自动重试，phase=start 展示「正在重试」，done（新流已产出）收起。
         onData: (part) => {
-            if (part.type === 'data-compaction') {
+            if (part.type === 'data-workspace-summary') {
+                useWorkspacePanelStore.getState().receive(part.data as WorkspaceSummary);
+            } else if (part.type === 'data-compaction') {
                 const phase = (part.data as { phase?: string } | undefined)?.phase;
                 useChatStore.getState().setCompacting(convId, phase === 'start');
             } else if (part.type === 'data-retry') {
@@ -194,6 +197,7 @@ function createChat(convId: string): Chat<UIMessage> {
             const title = extractGeneratedTitle(messages);
             if (title) store.applyGeneratedTitle(convId, title);
             store.replaceMessages(convId, toStoreMessages(messages, store.messagesById[convId]));
+            void useWorkspacePanelStore.getState().load(convId);
             // 竞态兜底：标题生成慢于回答时本轮 metadata 不带标题，首轮后延时重取列表，拉取后端已落库标题。
             if (!title && isFirstTurn(messages)) {
                 setTimeout(() => void useChatStore.getState().refreshList(), TITLE_FALLBACK_DELAY_MS);

@@ -223,6 +223,7 @@ function buildCsp(backendPort = DEFAULT_BACKEND_PORT): string {
         "default-src 'self' app://local",
         "script-src 'self' 'unsafe-inline' app://local",
         "style-src 'self' 'unsafe-inline' app://local",
+        "worker-src 'self' blob: app://local",
         "img-src 'self' data: blob: https: app://local",
         "font-src 'self' data: app://local",
         `connect-src 'self' app://local http://localhost:${backendPort} http://127.0.0.1:${backendPort} https: ws: wss:`

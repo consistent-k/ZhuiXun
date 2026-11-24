@@ -27,14 +27,6 @@ const useStyles = createStyles(({ css }) => {
             maxWidth: '85%'
         },
 
-        '&.message-results-files': {
-            display: 'grid',
-            gap: spacing.xs,
-            marginBottom: spacing.md,
-            overflowWrap: 'anywhere',
-            '& img': { maxWidth: '100%', maxHeight: 240, objectFit: 'contain' }
-        },
-
         '&.message-item': {
             display: 'flex',
             minWidth: 0,
@@ -109,11 +101,6 @@ const useStyles = createStyles(({ css }) => {
             // 操作条（复制/回滚）：常驻占位（高度恒定）使每条消息结构一致，消息间距由此均匀；
             // 不用绝对定位——那会悬浮到下一层消息上。默认透明且不接收点击，悬停本条消息或
             // 内部获焦（Popconfirm 展开）时淡入。放在气泡下方画布背景上，对比度正常。
-            '& .message-item-results': {
-                marginTop: spacing.md,
-                '& > button': { color: colors.primary }
-            },
-
             '& .message-item-actions': {
                 display: 'flex',
                 alignItems: 'center',

@@ -16,6 +16,8 @@ import {
 } from '@/services';
 import type { Message } from '@/types/chat';
 
+import { useWorkspacePanelStore } from './workspacePanelStore';
+
 /** 新建/写入会话时的入参（含消息，用于乐观更新内存 + 写穿后端） */
 interface ConversationInput {
     id: string;
@@ -297,6 +299,7 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     },
 
     deleteConversation: (convId) => {
+        useWorkspacePanelStore.getState().forget(convId);
         revokeApprovalGrant(convId, get().approvalById[convId]);
         set((state) => {
             const { [convId]: _removed, ...rest } = state.messagesById;
@@ -318,6 +321,7 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     },
 
     clearAll: () => {
+        for (const conversation of get().conversations) useWorkspacePanelStore.getState().forget(conversation.id);
         for (const [id, selection] of Object.entries(get().approvalById)) revokeApprovalGrant(id, selection);
         set({
             conversations: [],

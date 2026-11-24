@@ -25,6 +25,7 @@ import {
     createSkillHubRouter,
     createSkillsRouter,
     createToolsRouter,
+    createWorkspaceRouter,
     settingsRouter
 } from '@/http/routes';
 import { hooksView } from '@/modules/hooks';
@@ -57,6 +58,7 @@ export function createApp(getServices: () => ServiceContainer | undefined = getC
         createHealthRouter(() => getServices()?.runtime, securityPosture)
     );
     app.route('/', settingsRouter);
+    app.route('/', createWorkspaceRouter());
 
     // 调试端点（技能/工具清单）
     app.route(

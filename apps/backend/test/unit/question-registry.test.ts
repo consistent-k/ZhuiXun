@@ -107,7 +107,9 @@ async function harness(seed = messages()) {
                 name: 'isolated-services',
                 setup(builder) {
                     builder.onResolve(
-                        { filter: /^(?:@\/services|@\/utils\/request|\.\/appConfigStore|\.\/projectStore)$/ },
+                        {
+                            filter: /^(?:@\/services|@\/utils\/request|\.\/appConfigStore|\.\/projectStore|\.\/workspacePanelStore)$/
+                        },
                         (args) => ({ path: args.path, namespace: 'question-test' })
                     );
                     builder.onLoad({ filter: /.*/, namespace: 'question-test' }, (args) => ({
@@ -117,11 +119,13 @@ async function harness(seed = messages()) {
                                   Object.keys(services)
                                       .map((name) => `export const ${name} = (...args) => services.${name}(...args);`)
                                       .join('\n')
-                                : args.path === '@/utils/request'
-                                  ? `export const API_BASE_URL = 'http://question-test.invalid'; export const authHeaders = () => ({}); export const desktopApprovalBridge = () => undefined;`
-                                  : args.path === './appConfigStore'
-                                    ? `export const useAppConfigStore = {getState: () => ({defaultAgentMode: 'routed'})};`
-                                    : `export const useProjectStore = {getState: () => ({currentProjectId: null})};`,
+                                : args.path === './workspacePanelStore'
+                                  ? `export const useWorkspacePanelStore = { getState: () => ({ receive: () => {}, forget: () => {}, load: async () => {} }) };`
+                                  : args.path === '@/utils/request'
+                                    ? `export const API_BASE_URL = 'http://question-test.invalid'; export const authHeaders = () => ({}); export const desktopApprovalBridge = () => undefined;`
+                                    : args.path === './appConfigStore'
+                                      ? `export const useAppConfigStore = {getState: () => ({defaultAgentMode: 'routed'})};`
+                                      : `export const useProjectStore = {getState: () => ({currentProjectId: null})};`,
                         loader: 'js'
                     }));
                 }

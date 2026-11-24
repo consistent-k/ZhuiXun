@@ -1,6 +1,9 @@
+import path from 'node:path';
+
 import type { LanguageModelUsage, TextStreamPart, ToolSet, UIMessage, UIMessageChunk } from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { WORKSPACE_DIR } from '@/config/shell';
 import type { ResolvedModel } from '@/config/types';
 import { desktopApprovalGrants } from '@/modules/chat/approval-grants';
 import { runChatTurn, ChatTurnError, turnPhaseOf } from '@/modules/chat/service';
@@ -215,7 +218,11 @@ describe('runChatTurn real UI stream orchestration', () => {
             sessionId: 'session',
             projectId: undefined
         });
-        expect(f.createHooks).toHaveBeenCalledWith({ sessionId: 'session', projectId: undefined, cwd: undefined });
+        expect(f.createHooks).toHaveBeenCalledWith({
+            sessionId: 'session',
+            projectId: undefined,
+            cwd: path.join(WORKSPACE_DIR, 'session')
+        });
         expect(f.hooks.stop).toHaveBeenCalledWith({ stopReason: undefined, lastAssistantText: '回答' });
     });
 

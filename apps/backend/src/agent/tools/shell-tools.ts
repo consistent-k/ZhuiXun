@@ -517,6 +517,8 @@ export interface CreateShellToolsOptions {
      * 没有自动的 "Available files" 清单。不传时沿用进程级临时 workspace + 上传技能文档。
      */
     primaryDir?: string;
+    /** 会话隔离的默认临时目录；仍 seed 技能资源。 */
+    temporaryDir?: string;
     /**
      * 可选的项目附加工作目录（绝对路径数组）。真实 shell 本就能访问任意绝对路径，这里仅用于在
      * 工具说明里告知模型这些目录可用；不改变 cwd（相对路径仍按 primaryDir 解析）。
@@ -673,18 +675,18 @@ export async function createShellTools(skillsDir: string, options: CreateShellTo
 
     // 项目主工作目录必须已存在（调用方在发起会话时已探活），此处不自动创建用户目录；
     // 仅在使用默认临时 workspace 时才 mkdir。
-    const cwd = primaryDir || WORKSPACE_DIR;
+    const cwd = primaryDir || options.temporaryDir || WORKSPACE_DIR;
     const [shell, decode] = await Promise.all([
         resolveShell(),
         process.platform === 'win32' ? createWindowsDecoder() : Promise.resolve(decodeUtf8),
         primaryDir
             ? undefined
             : fsp
-                  .mkdir(WORKSPACE_DIR, { recursive: true })
+                  .mkdir(cwd, { recursive: true })
                   // 先清理历史 session 残留的停用技能目录，再补齐启用技能的脚本等资源；
                   // 文档（.md）随后由 uploadDirectory seed。
-                  .then(() => removeStaleSkillDirs(WORKSPACE_DIR, disabledSkillDirs))
-                  .then(() => seedSkillResources(skillsDir, WORKSPACE_DIR, enabledSkillDirs))
+                  .then(() => removeStaleSkillDirs(cwd, disabledSkillDirs))
+                  .then(() => seedSkillResources(skillsDir, cwd, enabledSkillDirs))
     ]);
 
     // 只有默认 workspace 才 seed 技能文档（并据此生成 Available files 清单）；

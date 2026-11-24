@@ -24,7 +24,8 @@ function resolveApiBaseUrl(): string {
     if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
     const injectedPort = typeof window !== 'undefined' ? window.zhuixun?.backendPort : undefined;
     const port = injectedPort && injectedPort > 0 ? injectedPort : DEFAULT_BACKEND_PORT;
-    return `http://localhost:${port}`;
+    // 后端只监听 IPv4；避免浏览器将 localhost 优先解析为 ::1。
+    return `http://127.0.0.1:${port}`;
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();

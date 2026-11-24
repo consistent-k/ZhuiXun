@@ -27,3 +27,5 @@ export { default as settingsRouter } from './settings';
 export { createSkillHubRouter } from './skillhub';
 export { createSkillsRouter } from './skills';
 export { createToolsRouter } from './tools';
+
+export { createWorkspaceRouter } from './workspace';

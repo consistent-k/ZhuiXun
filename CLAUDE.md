@@ -82,10 +82,20 @@
 - 路径用 `os.homedir()` 而非 `__dirname`：dev(tsx 跑 src) 与打包(app.js 在只读 resources) 下 `__dirname` 含义不同且 resources 不可写。
 - **坑**：技能目录下 `tools/index.js` 会在加载时被 `import()` 执行，故应用写入路径（zip 导入、SkillHub 安装）一律不落 `tools/`。
 - **格式**：每技能一目录含 `SKILL.md`（frontmatter + 正文即 systemPrompt）。frontmatter 用标准 `yaml` 库解析/序列化（`modules/skills/loader.ts`）：写入端给含冒号/逗号的值加引号保往返，读取端对畸形 YAML 报错并跳过该技能。`allowed-tools`/`disallowed-tools` 是 Claude Code 风格**单行逗号串**（如 `allowed-tools: Bash, Read, mcp__x__y`），非 YAML 数组——按标量读入再按逗号切分。
-- **加载结果**：`load_skill` 成功以工具结果返回 `instructions`（原输出字段 `systemPrompt` 改名；内部存储与编辑字段仍为 `systemPrompt`，不改写 Agent 系统指令）、`directory`（默认工作区模式下用户技能的完整工作区副本，其余情况为 registry 解析出的源目录）、`files`（相对该目录的资源清单，不含 `SKILL.md`）。默认工作区每轮把启用用户技能同步进 `os.tmpdir()/zhuixun-workspace/<目录名>`：`.md` 由 bash-tool `uploadDirectory` seed，脚本等其它资源由 `shell-tools.ts` 的 `seedSkillResources` 复制（跳过顶层 `tools/`、符号链接，大小与 mtime 未变不重写）；副本缺文件时 `load_skill` 退回源目录。**坑**：只 seed `.md` 会留下同名缺脚本的副本，模型按相对路径找不到脚本；直接指向 `~/.zhuixun/skills` 又会因 Bash 含 `.zhuixun` 一律 ask。`availableTools` 只列本技能关联且当前实际可用的工具，不是本轮工具全集；空列表不阻止使用已有 WebFetch 等相关工具，也不授予额外权限或自动执行资源脚本。
+- **加载结果**：`load_skill` 成功以工具结果返回 `instructions`（原输出字段 `systemPrompt` 改名；内部存储与编辑字段仍为 `systemPrompt`，不改写 Agent 系统指令）、`directory`（默认工作区模式下用户技能的完整工作区副本，其余情况为 registry 解析出的源目录）、`files`（相对该目录的资源清单，不含 `SKILL.md`）。默认工作区每轮把启用用户技能同步进 `os.tmpdir()/zhuixun-workspace/<sessionId>/<目录名>`：`.md` 由 bash-tool `uploadDirectory` seed，脚本等其它资源由 `shell-tools.ts` 的 `seedSkillResources` 复制（跳过顶层 `tools/`、符号链接，大小与 mtime 未变不重写）；副本缺文件时 `load_skill` 退回源目录。**坑**：只 seed `.md` 会留下同名缺脚本的副本，模型按相对路径找不到脚本；直接指向 `~/.zhuixun/skills` 又会因 Bash 含 `.zhuixun` 一律 ask。`availableTools` 只列本技能关联且当前实际可用的工具，不是本轮工具全集；空列表不阻止使用已有 WebFetch 等相关工具，也不授予额外权限或自动执行资源脚本。
 - **技能误调用修复**：SDK `repairToolCall` 仅在 `NoSuchToolError` 的未知工具名精确匹配已启用技能 id（或仅差大小写 / `_`↔`-` 且唯一命中）、且当前工具集中有 `load_skill` 时，改写为 `load_skill({ skillId })` 后交回 SDK；不处理 provider 已执行调用、不覆盖已有工具、不猜测其他未知名或修复参数错误，仍走正常审批与 hooks。`load_skill` 的 `skillId` 用同一套查找（`agent/tools/skill-lookup.ts` 的 `findSkillMetadata`，对齐 AI SDK cookbook 不区分大小写的 loadSkill），命中后统一使用规范 id；停用与多候选仍拒绝。
 - 启停状态记在 `skills-state.json`（停用集，读-改-写整段串行化避免并发丢更新）。
 - SkillHub（skillhub.cn）技能广场安装：302→COS、slug→name 归一、scripts 剥离等坑已处理。
+
+## 会话工作面板
+
+- 摘要仅在居中聊天右侧留白足够时悬浮展示，窄窗口隐藏；标题栏不设常驻入口。文件从消息、附件或产物显式打开独立预览分栏，关闭最后一个标签即收起。
+
+- `modules/workspace` 保存会话附属的 `workspace.json`（按轮任务/来源/产物），串行写入后发布 `data-workspace-summary`；前端 `workspacePanelStore` 只持久化 UI 标签拓扑，不反写业务摘要。
+- `register_artifact` 是 routed/progressive 共用的基础工具，只登记实际文件、不授予读取权限。文件预览解析和内容读取都复查范围与 Read 策略，ask 经独立 UI 确认，deny 始终拒绝。
+- 默认 shell 工作区按会话隔离为 `WORKSPACE_DIR/<sessionId>`，通过 `temporaryDir` 传入，仍 seed 技能资源；无 sessionId 的直接 shell 工具调用保留默认根。不能把共享临时根整体作为会话可读范围。
+- `.workspace-instance-id` 跟随 sessions 根持久化，UI 恢复命名空间不依赖端口。临时 fileId、Blob URL、正文、审批授权不持久化。PDF 使用独立 worker/按页渲染。
+- 下载先经 `/api` 签发短时一次性能力，再由 `/workspace-download/:token` 流式传输；该路径不承载通用文件参数，仍重新鉴权与校验身份，日志隐藏 token。
 
 ## 生产构建与进程模型
 

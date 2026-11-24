@@ -319,12 +319,12 @@ describe('scenario: user skill resources in the default workspace', () => {
         );
         expect(loaded).toMatchObject({
             output: {
-                directory: path.join(WORKSPACE_DIR, 'script-search'),
+                directory: path.join(WORKSPACE_DIR, sessionId, 'script-search'),
                 files: ['references/engines.md', 'scripts/search.py']
             }
         });
         expect(JSON.stringify(model.doStreamCalls[2].prompt)).toContain('synthetic search');
-        await expect(fs.stat(path.join(WORKSPACE_DIR, 'script-search/tools'))).rejects.toMatchObject({
+        await expect(fs.stat(path.join(WORKSPACE_DIR, sessionId, 'script-search/tools'))).rejects.toMatchObject({
             code: 'ENOENT'
         });
         await vi.waitFor(async () => {

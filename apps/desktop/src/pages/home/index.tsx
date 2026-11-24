@@ -8,6 +8,7 @@ import { useChatStore, usePersonaStore, useProjectStore } from '@/stores';
 
 import { ChatArea } from './components/ChatArea';
 import { ChatSession } from './components/ChatSession';
+import { ChatWorkspace } from './components/WorkspacePanel';
 import useStyles from './styles';
 
 const HomePage = () => {
@@ -115,20 +116,22 @@ const HomePage = () => {
     return (
         <div className={cx('home-page', styles.toString())}>
             <ChatSession>
-                <ChatArea
-                    messagesLoading={messagesLoading}
-                    conversationKey={currentConversationId ?? 'draft'}
-                    title={currentConv?.title ?? '新对话'}
-                    showProjectSelect={!isChannelConv}
-                    projectOptions={projectOptions}
-                    projectId={headerProjectId}
-                    onChangeProject={handleChangeProject}
-                    personaOptions={personaOptions}
-                    defaultPersonaId={defaultPersonaId}
-                    personaId={headerPersonaId}
-                    showPersonaSelect={!isChannelConv}
-                    onChangePersona={handleChangePersona}
-                />
+                <ChatWorkspace>
+                    <ChatArea
+                        messagesLoading={messagesLoading}
+                        conversationKey={currentConversationId ?? 'draft'}
+                        title={currentConv?.title ?? '新对话'}
+                        showProjectSelect={!isChannelConv}
+                        projectOptions={projectOptions}
+                        projectId={headerProjectId}
+                        onChangeProject={handleChangeProject}
+                        personaOptions={personaOptions}
+                        defaultPersonaId={defaultPersonaId}
+                        personaId={headerPersonaId}
+                        showPersonaSelect={!isChannelConv}
+                        onChangePersona={handleChangePersona}
+                    />
+                </ChatWorkspace>
             </ChatSession>
             {backgroundStreamCount > 0 && (
                 <div className="home-page-background-streams">

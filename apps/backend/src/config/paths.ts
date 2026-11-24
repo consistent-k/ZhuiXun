@@ -44,6 +44,8 @@ export function ensureDirSafe(dir: string, context?: string): boolean {
  * 环境变量名与默认段名不再分离。全部「调用时求值」（晚于 bootstrap-settings 引导）。
  */
 export const paths = {
+    /** 数据集身份跟随会话存储根，端口变化不影响 UI 恢复。 */
+    workspaceIdentityFile: (): string => path.join(paths.sessionsDir(), '.workspace-instance-id'),
     /** 主技能根：~/.zhuixun/skills（SKILLS_USER_DIR 可覆盖）。 */
     skillsDir: (): string => resolveUserPath(optional('SKILLS_USER_DIR'), 'skills'),
 
