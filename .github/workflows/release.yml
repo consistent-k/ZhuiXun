@@ -23,7 +23,7 @@ jobs:
                   persist-credentials: false
             - uses: actions/setup-node@v7
               with:
-                  node-version: '24'
+                  node-version: '26'
             - if: github.event_name == 'push'
               name: Validate version and extract release notes
               shell: bash
@@ -84,7 +84,7 @@ jobs:
                   persist-credentials: false
             - uses: actions/setup-node@v7
               with:
-                  node-version: '24'
+                  node-version: '26'
             - uses: pnpm/action-setup@v6
             - run: pnpm install --frozen-lockfile
             - run: pnpm --filter @zhuixun/backend bundle
