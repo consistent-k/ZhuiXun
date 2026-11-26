@@ -17,3 +17,5 @@ export * from './settings';
 export * from './skill';
 export * from './skillhub';
 export * from './tool';
+
+export * from './connector';

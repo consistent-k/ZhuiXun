@@ -48,6 +48,7 @@ import { WORKSPACE_DIR } from '@/config/shell';
 import type { ResolvedModel } from '@/config/types';
 import { getAutomationService } from '@/modules/automation';
 import { createChatSections } from '@/modules/chat/context';
+import { createCliConnectorTools } from '@/modules/connectors';
 import { getCheckpointStore, type CheckpointRecorder } from '@/modules/conversations';
 import { getGoalService } from '@/modules/goal';
 import { getJobService } from '@/modules/jobs';
@@ -186,6 +187,7 @@ export function buildToolApproval(
                 // 注意：返回 user-approval 时前端复用现有 ToolApprovalCard，无需新组件。
                 return getWebSettings().requireApproval === 'always' ? 'user-approval' : 'approved';
             default:
+                if (toolName.startsWith('connector_cli_')) return danger ? 'approved' : 'user-approval';
                 return 'not-applicable';
         }
     };
@@ -488,7 +490,8 @@ export async function createRoutedAgent(
         ...automationTools,
         ...jobTools,
         ...goalTools,
-        ...skillTools
+        ...skillTools,
+        ...(await createCliConnectorTools())
     };
 
     // 本地 shell 工具（Bash/Read/Write）。放在技能工具之后、MCP 之前：
@@ -846,6 +849,7 @@ export async function createProgressiveAgent(
                 ...automationTools,
                 ...jobTools,
                 ...goalTools,
+                ...(await createCliConnectorTools()),
                 ...readOnlyShellTools,
                 ...webTools,
                 ...subagentTools

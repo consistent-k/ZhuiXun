@@ -16,9 +16,9 @@ import useStyles from './styles';
 export function MessageList() {
     const { styles, cx } = useStyles();
     const messages = useChatMessages();
-    const { loading: isStreaming, pendingInteractionCount } = useChatRun();
+    const { loading: isStreaming, error, pendingInteractionCount } = useChatRun();
 
-    if (messages.length === 0) {
+    if (messages.length === 0 && !error) {
         return (
             <section className={cx('message-list-placeholder', styles.toString())} aria-labelledby="chat-welcome">
                 <h1 id="chat-welcome">沿着自己的路追寻</h1>
@@ -45,6 +45,7 @@ export function MessageList() {
                             message={message}
                             streaming={streaming}
                             isLast={isLast}
+                            error={isLast && !isStreaming ? (error ?? undefined) : undefined}
                             // 停止提示的按钮只在最后一条上出现，其余行固定 false，避免 status 变化让历史行重渲染
                             busy={isLast && (isStreaming || pendingInteractionCount > 0)}
                         />
@@ -52,6 +53,15 @@ export function MessageList() {
                     </Fragment>
                 );
             })}
+            {/* 首输出前失败时 SDK 可能还没有创建 assistant 消息，仍在原用户消息下提供重试入口。 */}
+            {error && !isStreaming && messages.at(-1)?.role !== 'assistant' && (
+                <MessageRow
+                    message={{ id: 'reply-error', role: 'assistant', parts: [] }}
+                    isLast
+                    error={error}
+                    busy={pendingInteractionCount > 0}
+                />
+            )}
         </div>
     );
 }

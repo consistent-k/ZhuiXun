@@ -4,7 +4,7 @@ import { html } from 'hono/html';
 import { oauthCallbackUrl } from '@/config/server';
 import type { MCPConfigFile } from '@/modules/mcp';
 import type { MCPClientManager, MCPServerConfig } from '@/modules/mcp';
-import { saveMCPConfig } from '@/modules/mcp';
+import { saveMCPConfig, connectorCatalog, createConnectorConfig } from '@/modules/mcp';
 import {
     tokenStore,
     setPendingAuth,
@@ -35,6 +35,42 @@ type MCPRouteManager = Pick<
 export function createMCPRouter(getManager: () => MCPRouteManager | undefined, getConfigPath: () => string) {
     const mcp = new Hono();
 
+    mcp.get('/api/mcp/apps', (c) => c.json({ code: 0, data: connectorCatalog.filter((app) => app.kind === 'mcp') }));
+
+    mcp.post('/api/mcp/apps/:id/connect', async (c) => {
+        const manager = getManager();
+        if (!manager) return c.json({ code: 503, message: '服务尚未就绪' }, 503);
+        const id = c.req.param('id');
+        if (!connectorCatalog.some((app) => app.id === id && app.kind === 'mcp'))
+            return c.json({ code: 404, message: '应用不存在' }, 404);
+        const body = await c.req.json<unknown>().catch(() => null);
+        if (!body || typeof body !== 'object' || Array.isArray(body))
+            return c.json({ code: 400, message: '连接参数格式错误' }, 400);
+        const { token } = body as { token?: unknown };
+        if (token !== undefined && typeof token !== 'string')
+            return c.json({ code: 400, message: '凭证格式错误' }, 400);
+        let config: MCPServerConfig;
+        try {
+            config = createConnectorConfig(id, token as string | undefined);
+        } catch {
+            return c.json({ code: 400, message: '请输入有效的 Access Token' }, 400);
+        }
+        const existing = manager.getConfigs().find((item) => item.name === config.name);
+        if (existing && existing.connectorId !== id)
+            return c.json({ code: 409, message: '应用连接名称被自定义 MCP 占用，请先重命名该服务' }, 409);
+        const result = existing ? await manager.updateServer(config.name, config) : await manager.addServer(config);
+        await persistConfig(manager, getConfigPath);
+        // 传输错误可能包含完整 URL，内置应用只返回可操作提示，避免泄露 query 中的令牌。
+        return c.json({
+            code: 0,
+            data: {
+                name: config.name,
+                status: result.ok ? 'connected' : 'failed',
+                error: result.ok ? undefined : '连接未完成，请检查授权或重试'
+            }
+        });
+    });
+
     /** GET /api/mcp/servers — 列出所有 server + 运行时状态 */
     mcp.get('/api/mcp/servers', async (c) => {
         const manager = getManager();
@@ -50,17 +86,25 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
             const hasTokens = !!tokenStore.getTokens(cfg.name);
             return {
                 name: cfg.name,
+                connectorId: cfg.connectorId,
                 transport: cfg.transport,
                 command: cfg.command,
                 args: cfg.args,
-                env: cfg.env,
-                url: cfg.url,
+                env: cfg.connectorId ? undefined : cfg.env,
+                headers:
+                    cfg.connectorId || !cfg.headers
+                        ? undefined
+                        : Object.fromEntries(Object.keys(cfg.headers).map((key) => [key, ''])),
+                url: cfg.connectorId ? undefined : cfg.url,
                 disabled: !!cfg.disabled,
                 authType: cfg.authType || 'none',
-                oauth: cfg.oauth,
+                oauth:
+                    cfg.connectorId || !cfg.oauth
+                        ? undefined
+                        : { scope: cfg.oauth.scope, clientId: cfg.oauth.clientId },
                 authenticated: hasTokens,
                 status: st?.status || 'disconnected',
-                error: st?.error,
+                error: cfg.connectorId && st?.error ? '连接未完成，请检查授权或重试' : st?.error,
                 toolCount: st?.toolCount || 0
             };
         });
@@ -76,7 +120,22 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
         }
 
         const body = await c.req.json();
-        const { name, transport, command, args, env, url, disabled, authType, oauth } = body;
+        const { name, transport, command, args, env, url, disabled, authType, oauth, headers } = body;
+
+        if (headers !== undefined) {
+            if (
+                !headers ||
+                typeof headers !== 'object' ||
+                Array.isArray(headers) ||
+                Object.values(headers).some((value) => typeof value !== 'string')
+            )
+                return c.json({ code: 400, message: 'headers 必须为字符串键值对' }, 400);
+            try {
+                new Headers(headers);
+            } catch {
+                return c.json({ code: 400, message: '请求头格式不正确' }, 400);
+            }
+        }
 
         if (!name || !transport) {
             return c.json({ code: 400, message: 'name 和 transport 为必填项' }, 400);
@@ -106,6 +165,7 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
             command,
             args,
             env,
+            headers,
             url,
             disabled: !!disabled,
             authType: authType || 'none',
@@ -131,7 +191,22 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
 
         const oldName = c.req.param('name');
         const body = await c.req.json();
-        const { name, transport, command, args, env, url, disabled, authType, oauth } = body;
+        const { name, transport, command, args, env, url, disabled, authType, oauth, headers } = body;
+
+        if (headers !== undefined) {
+            if (
+                !headers ||
+                typeof headers !== 'object' ||
+                Array.isArray(headers) ||
+                Object.values(headers).some((value) => typeof value !== 'string')
+            )
+                return c.json({ code: 400, message: 'headers 必须为字符串键值对' }, 400);
+            try {
+                new Headers(headers);
+            } catch {
+                return c.json({ code: 400, message: '请求头格式不正确' }, 400);
+            }
+        }
 
         if (!name || !transport) {
             return c.json({ code: 400, message: 'name 和 transport 为必填项' }, 400);
@@ -154,6 +229,7 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
         }
 
         const oldConfig = manager.getConfigs().find((c) => c.name === oldName);
+        if (oldConfig?.connectorId) return c.json({ code: 400, message: '内置应用请通过连接弹窗管理' }, 400);
         if (!oldConfig) {
             return c.json({ code: 404, message: `Server "${oldName}" 不存在` }, 404);
         }
@@ -169,10 +245,22 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
             command,
             args,
             env,
+            headers:
+                headers === undefined
+                    ? oldConfig.headers
+                    : Object.fromEntries(
+                          Object.entries(headers as Record<string, string>).map(([key, value]) => [
+                              key,
+                              value || oldConfig.headers?.[key] || ''
+                          ])
+                      ),
             url,
             disabled: !!disabled,
             authType: authType || 'none',
-            oauth
+            oauth:
+                authType === 'oauth'
+                    ? { ...oauth, clientSecret: oauth?.clientSecret || oldConfig.oauth?.clientSecret }
+                    : undefined
         };
         const result = name !== oldName ? await manager.addServer(config) : await manager.updateServer(oldName, config);
 
@@ -199,6 +287,8 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
         }
 
         await manager.removeServer(name);
+        tokenStore.clear(name);
+        clearPendingAuth(name);
 
         // 持久化
         await persistConfig(manager, getConfigPath);
@@ -218,7 +308,14 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
 
         return c.json({
             code: 0,
-            data: { name, status: result.ok ? 'connected' : 'failed', error: result.error }
+            data: {
+                name,
+                status: result.ok ? 'connected' : 'failed',
+                error:
+                    manager.getConfigs().find((cfg) => cfg.name === name)?.connectorId && result.error
+                        ? '连接失败，请检查授权'
+                        : result.error
+            }
         });
     });
 
@@ -256,7 +353,7 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
                 name,
                 disabled: newDisabled,
                 status: result.ok ? 'connected' : 'failed',
-                error: result.error
+                error: config.connectorId && result.error ? '连接失败，请检查授权' : result.error
             }
         });
     });
@@ -295,6 +392,10 @@ export function createMCPRouter(getManager: () => MCPRouteManager | undefined, g
             return c.json({ code: 400, message: `Server "${name}" 缺少 url 配置` }, 400);
         }
 
+        if (c.req.query('force') === '1') {
+            tokenStore.clear(name);
+            clearPendingAuth(name);
+        }
         const redirectUrl = oauthCallbackUrl();
 
         try {
@@ -465,10 +566,12 @@ async function persistConfig(manager: MCPRouteManager, getConfigPath: () => stri
             configs.map((c) => [
                 c.name,
                 {
+                    connectorId: c.connectorId,
                     transport: c.transport,
                     command: c.command,
                     args: c.args,
                     env: c.env,
+                    headers: c.headers,
                     url: c.url,
                     disabled: c.disabled,
                     authType: c.authType,

@@ -70,6 +70,9 @@ export const paths = {
     /** MCP OAuth 持久化文件：~/.zhuixun/mcp-oauth.json（含 token，0600 落盘，重启复用）。 */
     mcpOAuthFile: (): string => resolveUserPath(optional('MCP_OAUTH_PATH'), 'mcp-oauth.json'),
 
+    /** 连接器安装目录与 CLI 连接状态（不包含 CLI 自管的授权文件）。 */
+    connectorsDir: (): string => resolveUserPath(optional('CONNECTORS_USER_DIR'), 'connectors'),
+
     /** 可恢复流落盘根：~/.zhuixun/streams（进程重启后重连回放的缓冲，TTL 过期清理）。 */
     streamsDir: (): string => resolveUserPath(optional('STREAMS_USER_DIR'), 'streams'),
 

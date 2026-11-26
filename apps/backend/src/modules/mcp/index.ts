@@ -18,3 +18,5 @@ export {
     startOAuthFlow,
     tokenStore
 } from './oauth';
+
+export { connectorCatalog, createConnectorConfig } from './catalog';

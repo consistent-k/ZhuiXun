@@ -23,6 +23,7 @@ interface FormValues {
     env?: Array<{ key: string; value: string }>;
     disabled?: boolean;
     authType?: 'none' | 'oauth';
+    headers?: Array<{ key: string; value: string }>;
     oauthScope?: string;
     oauthClientId?: string;
     oauthClientSecret?: string;
@@ -48,6 +49,9 @@ export function McpServerForm({ open, editingServer, onClose, onSubmit }: McpSer
                     url: editingServer.url,
                     disabled: editingServer.disabled,
                     authType: editingServer.authType || 'none',
+                    headers: editingServer.headers
+                        ? Object.entries(editingServer.headers).map(([key, value]) => ({ key, value }))
+                        : undefined,
                     oauthScope: editingServer.oauth?.scope,
                     oauthClientId: editingServer.oauth?.clientId,
                     oauthClientSecret: editingServer.oauth?.clientSecret,
@@ -84,6 +88,9 @@ export function McpServerForm({ open, editingServer, onClose, onSubmit }: McpSer
             disabled: values.disabled,
             authType: values.authType || 'none',
             oauth,
+            headers: Object.fromEntries(
+                (values.headers ?? []).filter((entry) => entry.key).map((entry) => [entry.key, entry.value ?? ''])
+            ),
             env: envObject
         });
     };
@@ -125,6 +132,41 @@ export function McpServerForm({ open, editingServer, onClose, onSubmit }: McpSer
                     </Form.Item>
                 </div>
 
+                {transport !== 'stdio' && (
+                    <Form.Item label="请求头（Headers）">
+                        <Form.List name="headers">
+                            {(fields, { add, remove }) => (
+                                <>
+                                    {fields.map((field) => (
+                                        <Space key={field.key} align="baseline">
+                                            <Form.Item
+                                                name={[field.name, 'key']}
+                                                rules={[{ required: true, message: '请输入 Header 名称' }]}
+                                            >
+                                                <Input placeholder="Authorization" />
+                                            </Form.Item>
+                                            <Form.Item name={[field.name, 'value']}>
+                                                <Input.Password
+                                                    autoComplete="off"
+                                                    placeholder={editingServer ? '留空保留已保存值' : 'Bearer …'}
+                                                />
+                                            </Form.Item>
+                                            <Button
+                                                type="text"
+                                                aria-label="移除请求头"
+                                                onClick={() => remove(field.name)}
+                                                icon={<MinusCircleOutlined />}
+                                            />
+                                        </Space>
+                                    ))}
+                                    <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
+                                        添加请求头
+                                    </Button>
+                                </>
+                            )}
+                        </Form.List>
+                    </Form.Item>
+                )}
                 {transport === 'stdio' && (
                     <>
                         <Form.Item name="command" label="命令" rules={[{ required: true, message: '请输入命令' }]}>

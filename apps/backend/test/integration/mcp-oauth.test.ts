@@ -57,7 +57,8 @@ describe('OAuth real persistence and orchestration with fake SDK boundary', () =
                 authorizationUrl: new URL(`https://auth.invalid/authorize?state=${options.state}`),
                 codeVerifier: 'fixture-pkce'
             })),
-            exchangeAuthorization: vi.fn(async () => tokens)
+            exchangeAuthorization: vi.fn(async () => tokens),
+            registerClient: vi.fn(async () => ({ client_id: 'dynamic-id', redirect_uris: metadata.redirect_uris }))
         } satisfies NonNullable<Parameters<typeof createOAuthFlow>[0]>['sdk'];
     }
 
@@ -238,7 +239,8 @@ describe('OAuth real persistence and orchestration with fake SDK boundary', () =
             clientInformation: { client_id: 'registered-id' },
             authorizationCode: 'fixture-code',
             codeVerifier: 'fixture-pkce',
-            redirectUri: metadata.redirect_uris[0]
+            redirectUri: metadata.redirect_uris[0],
+            resource: 'https://resource.invalid'
         });
         expect(getPendingAuth('fixture-server')?.completed).toBe(true);
         await store.flush();
@@ -255,7 +257,7 @@ describe('OAuth real persistence and orchestration with fake SDK boundary', () =
         expect(sdk.discoverOAuthServerInfo).toHaveBeenCalledTimes(1);
     });
 
-    it('uses alias fallback, rejects dynamic registration and propagates discovery/start failures', async () => {
+    it('uses alias fallback, completes dynamic registration and propagates discovery/start failures', async () => {
         const sdk = fakeSDK();
         const flow = createOAuthFlow({ store, sdk });
         await flow.startOAuthFlow('fixture-server', 'https://resource.invalid', metadata.redirect_uris[0], metadata);
@@ -272,10 +274,13 @@ describe('OAuth real persistence and orchestration with fake SDK boundary', () =
                 registration_endpoint: 'https://auth.invalid/register'
             }
         });
-        await expect(
-            flow.startOAuthFlow('registration', 'https://resource.invalid', metadata.redirect_uris[0], metadata)
-        ).rejects.toThrow('动态注册');
-        expect(sdk.startAuthorization).toHaveBeenCalledTimes(1);
+        await flow.startOAuthFlow('registration', 'https://resource.invalid', metadata.redirect_uris[0], metadata);
+        expect(sdk.registerClient).toHaveBeenCalledTimes(1);
+        expect(store.getClientInformation('registration')?.client_id).toBe('dynamic-id');
+        const registrationState = sdk.startAuthorization.mock.calls[1][1].state!;
+        expect(resolveOAuthState(registrationState)).toBe('registration');
+        consumeOAuthState(registrationState);
+        expect(sdk.startAuthorization).toHaveBeenCalledTimes(2);
         sdk.discoverOAuthServerInfo.mockRejectedValueOnce(new Error('discovery failure'));
         await expect(
             flow.startOAuthFlow('failure', 'https://resource.invalid', metadata.redirect_uris[0], metadata)

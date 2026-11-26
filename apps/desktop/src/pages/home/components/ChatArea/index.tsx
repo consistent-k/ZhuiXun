@@ -1,5 +1,5 @@
 import { FolderOutlined, SlidersOutlined } from '@ant-design/icons';
-import { Alert, App, Select } from 'antd';
+import { App, Select } from 'antd';
 import { useMemo } from 'react';
 
 import PageHeader from '@/components/PageHeader';
@@ -48,7 +48,7 @@ interface ChatAreaProps {
 }
 
 /**
- * 会话区外壳：标题栏（含实时任务进度）+ 报错条 + 消息滚动区 + 输入框。
+ * 会话区外壳：标题栏（含实时任务进度）+ 消息滚动区 + 输入框。
  *
  * 流式相关的状态与动作全部经 `ChatSession` 的 Context 取得，不再作为 props 透传：
  * 这里的运行态只在 status / error 变化时更新，标题栏的 Select、输入框不随 token 重渲染。
@@ -71,7 +71,7 @@ export function ChatArea({
     const { styles, cx } = useStyles();
     const { labels: toolLabels } = useToolLabels();
     const { message } = App.useApp();
-    const { loading, error, pendingInteractionCount } = useChatRun();
+    const { loading, pendingInteractionCount } = useChatRun();
     const actions = useChatActions();
     // 输入框发送入口：待确认操作未处理完时拦住发送，避免旧 run 未结算就开新一轮；
     // 其余情况识别 slash 命令（内置命令本地处理、用户命令先展开），再原样发送。
@@ -149,16 +149,6 @@ export function ChatArea({
                     )}
                 </div>
             </PageHeader>
-
-            {error && (
-                <Alert
-                    type="error"
-                    showIcon
-                    title="回复生成失败"
-                    description={error.message}
-                    className="chat-area-alert"
-                />
-            )}
 
             <ToolLabelContext.Provider value={toolLabels}>
                 <div className="chat-area-workspace">

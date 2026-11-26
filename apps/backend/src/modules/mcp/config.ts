@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 
+import { writeFileAtomic } from '@/config/atomic-json';
 import { createLogger } from '@/platform/logging/index';
 
 import type { MCPServerConfig } from './manager';
@@ -12,6 +13,8 @@ export interface MCPConfigFile {
 
 /** .mcp.json 落盘形态里单个 server 的宽松结构（JSON 反序列化而来，字段均可选） */
 interface RawServerConfig {
+    connectorId?: string;
+    headers?: Record<string, string>;
     transport?: MCPServerConfig['transport'];
     command?: string;
     args?: string[];
@@ -64,6 +67,8 @@ export async function loadMCPConfig(configPath: string): Promise<MCPConfigFile> 
 
         for (const [name, config] of Object.entries(raw.mcpServers ?? {})) {
             servers[name] = {
+                connectorId: config.connectorId,
+                headers: resolveEnvRecord(config.headers, name),
                 transport: config.transport || 'stdio',
                 command: config.command,
                 args: config.args?.map((arg: string) => resolvePlaceholders(arg, name, 'args')),
@@ -130,9 +135,19 @@ export async function saveMCPConfig(configPath: string, config: MCPConfigFile): 
     for (const [name, cfg] of Object.entries(config.servers)) {
         const existing = (existingRaw.mcpServers?.[name] as Record<string, unknown> | undefined) || {};
         const serverEntry: Record<string, unknown> = {
-            transport: cfg.transport
+            transport: cfg.transport,
+            connectorId: cfg.connectorId
         };
 
+        if (cfg.headers) {
+            const previous = (existing.headers as Record<string, unknown> | undefined) ?? {};
+            serverEntry.headers = Object.fromEntries(
+                Object.entries(cfg.headers).map(([key, value]) => [
+                    key,
+                    restorePlaceholder(value, previous[key], name, key)
+                ])
+            );
+        }
         if (cfg.authType && cfg.authType !== 'none') {
             serverEntry.authType = cfg.authType;
         }
@@ -172,6 +187,7 @@ export async function saveMCPConfig(configPath: string, config: MCPConfigFile): 
     }
 
     const output = { mcpServers: servers };
-    await fs.writeFile(configPath, JSON.stringify(output, null, 2) + '\n', 'utf-8');
+    await writeFileAtomic(configPath, JSON.stringify(output, null, 2) + '\n', { mode: 0o600 });
+    await fs.chmod(configPath, 0o600);
     log.info('已保存配置', { count: Object.keys(servers).length, configPath });
 }

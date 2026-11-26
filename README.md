@@ -196,7 +196,7 @@ pnpm exec electron-builder --mac --dir       # 只产出未打包目录，最快
 
 - **技能页 → 技能**：新建 / 编辑 / 删除、导入（`.md` 或 `.zip`）、导出、启用 / 停用（停用集记录在 `skills-state.json`）。
 - **技能广场**：浏览 SkillHub 并一键安装到 `~/.zhuixun/skills`。
-- **技能页 → 连接器**：管理 MCP server，其工具与技能一同挂给 Agent。
+- **技能页 → 连接器**：统一管理 MCP 与 CLI 应用。按声明生成凭证表单，支持多字段、Token/完整授权结果地址、浏览器 OAuth，以及 CLI 的安装/登录/状态检查/暂停/退出；仍保留「自定义 MCP」（stdio / SSE / Streamable HTTP），并支持自定义 Header。目录与状态不回传秘密，编辑已有 Header 留空保留已存值。百度网盘个人连接无需创建开放平台应用，新连接使用 Header；Linear 走 SDK OAuth；腾讯会议作为 CLI 适配示例，由用户点击后安装官方固定版本组件到专用目录，默认测试不安装或登录。CLI 调用使用 AI SDK 工具和既有审批/Hooks。新增应用的声明与验证方式见 [通用连接器说明](apps/backend/src/modules/connectors/README.md)，新对话使用最新连接状态。
 
 ## 智能体风格
 

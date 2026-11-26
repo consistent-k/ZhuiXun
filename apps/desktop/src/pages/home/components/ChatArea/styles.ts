@@ -89,10 +89,6 @@ const useStyles = createStyles(({ css }) => {
                 borderRadius: rounded.md,
                 '&:hover, &:focus-within': { background: colors['surface-soft'] },
                 '& [class$="-select"]': { maxWidth: 144, fontSize: 13 }
-            },
-
-            '& .chat-area-alert': {
-                margin: `${spacing.sm}px ${spacing.lg}px 0`
             }
         }
     });

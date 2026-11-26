@@ -29,3 +29,5 @@ export { createSkillsRouter } from './skills';
 export { createToolsRouter } from './tools';
 
 export { createWorkspaceRouter } from './workspace';
+
+export { createConnectorsRouter } from './connectors';

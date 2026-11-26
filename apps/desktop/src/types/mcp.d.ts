@@ -9,6 +9,8 @@ export interface MCPServerOAuthConfig {
 }
 
 export interface MCPServerItem {
+    connectorId?: string;
+    headers?: Record<string, string>;
     name: string;
     transport: MCPTransport;
     command?: string;
