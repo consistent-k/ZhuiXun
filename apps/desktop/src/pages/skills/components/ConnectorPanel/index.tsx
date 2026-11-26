@@ -28,6 +28,7 @@ import type { MCPServerItem } from '@/types/mcp';
 
 import { McpServerForm } from '../McpServerForm';
 
+import { AppCatalog } from './AppCatalog';
 import useStyles from './styles';
 
 const statusColorMap: Record<string, string> = {
@@ -51,7 +52,7 @@ export function ConnectorPanel() {
     const [formOpen, setFormOpen] = useState(false);
     const [editingServer, setEditingServer] = useState<MCPServerItem | null>(null);
     // OAuth 授权轮询定时器：存 ref 以便在授权完成 / 组件卸载时清理，
-    // 否则离开面板后 interval 仍每 3s 触发 fetch + setState（对已卸载组件）最多 60s。
+    // 否则离开面板后 interval 仍每 3s 触发 fetch + setState（对已卸载组件）最多 5 分钟。
     const authPollRef = useRef<{ interval?: ReturnType<typeof setInterval>; timeout?: ReturnType<typeof setTimeout> }>(
         {}
     );
@@ -72,6 +73,8 @@ export function ConnectorPanel() {
         const res = await fetchMCPServersApi();
         return res.code === SUCCESS_CODE ? (res.data ?? []) : [];
     });
+
+    const customServers = servers.filter((server) => !server.connectorId);
 
     const handleAdd = () => {
         setEditingServer(null);
@@ -122,8 +125,8 @@ export function ConnectorPanel() {
         }
     };
 
-    const handleAuth = async (name: string) => {
-        const res = await startMCPServerAuthApi(name);
+    const handleAuth = async (name: string, force = false) => {
+        const res = await startMCPServerAuthApi(name, force);
         if (res.code !== SUCCESS_CODE) return;
         const result = res.data;
         if (result?.authenticated) {
@@ -140,29 +143,40 @@ export function ConnectorPanel() {
                 const d = await fetchMCPServersApi();
                 if (d.code !== SUCCESS_CODE) return;
                 const s = d.data?.find((x) => x.name === name);
-                if (s?.authenticated || s?.status === 'connected') {
+                if (s?.status === 'connected' && !s.disabled) {
                     clearAuthPoll();
                     message.success(`${name} 授权成功`);
                     loadServers();
                 }
             }, 3000);
-            authPollRef.current.timeout = setTimeout(() => clearAuthPoll(), 60_000);
+            authPollRef.current.timeout = setTimeout(() => {
+                clearAuthPoll();
+                message.info('尚未完成连接，可在应用详情中重新授权');
+            }, 300_000);
         }
     };
 
     return (
         <div className={cx('connector-panel', styles.toString())}>
             <div className="connector-panel-toolbar">
-                <span className="connector-panel-hint">连接器即 MCP 服务，共 {servers.length} 个</span>
+                <div>
+                    <h2 className="connector-panel-heading">连接你的应用</h2>
+                    <span className="connector-panel-hint">让追寻访问常用服务，在对话中完成更多工作。</span>
+                </div>
                 <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
-                    添加连接器
+                    自定义 MCP
                 </Button>
             </div>
+            <AppCatalog refresh={loadServers} />
+            <div className="connector-panel-section">
+                <h3>自定义 MCP</h3>
+                <span className="connector-panel-hint">连接其他服务 · {customServers.length} 个</span>
+            </div>
             <Spin spinning={loading}>
-                {servers.length === 0 && !loading ? (
-                    <Empty description="暂无连接器（MCP 服务）" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                {customServers.length === 0 && !loading ? (
+                    <Empty description="还没有自定义 MCP，点击右上角添加" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 ) : (
-                    servers.map((server) => (
+                    customServers.map((server) => (
                         <Card
                             key={server.name}
                             className="connector-panel-server-card"

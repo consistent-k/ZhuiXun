@@ -17,7 +17,8 @@ const oauth = vi.hoisted(() => ({
     resolve: vi.fn(),
     consume: vi.fn()
 }));
-vi.mock('@/modules/mcp', () => ({
+vi.mock('@/modules/mcp', async () => ({
+    ...(await vi.importActual('@/modules/mcp/catalog')),
     saveMCPConfig: oauth.save,
     tokenStore: { getTokens: oauth.getTokens, clear: oauth.clear },
     getPendingAuth: oauth.pending,
@@ -272,5 +273,116 @@ describe('MCP real HTTP routes', () => {
             await callback('?code=code&state=state', '&lt;secret&gt;');
         }
         expect(oauth.consume).not.toHaveBeenCalled();
+    });
+});
+
+describe('内置应用连接', () => {
+    it('返回应用目录，拒绝未知应用与非法凭证，不允许覆盖自定义服务', async () => {
+        const catalog = await req<Array<{ id: string }>>('apps');
+        expect(catalog?.map((app) => app.id)).toEqual(['baidu-netdisk', 'linear']);
+        await req('apps/unknown/connect', 'POST', {}, 404);
+        await req('apps/baidu-netdisk/connect', 'POST', {}, 400);
+        await req('apps/baidu-netdisk/connect', 'POST', { token: 123 }, 400);
+        configs.push({ name: 'app-linear', transport: 'sse', url: 'https://fixture.invalid' });
+        await req('apps/linear/connect', 'POST', {}, 409);
+        expect(manager.addServer).not.toHaveBeenCalled();
+    });
+
+    it('后端生成固定连接，持久化应用来源，列表与失败响应不返回令牌', async () => {
+        const token = 'fixture-private-token';
+        manager.addServer.mockImplementationOnce(async (config) => {
+            configs.push(config);
+            return { name: config.name, ok: false, error: config.url };
+        });
+        const result = await req('apps/baidu-netdisk/connect', 'POST', { token, url: 'https://untrusted.invalid' });
+        expect(manager.addServer).toHaveBeenCalledWith(
+            expect.objectContaining({
+                connectorId: 'baidu-netdisk',
+                transport: 'sse',
+                url: 'https://mcp-pan.baidu.com/sse',
+                headers: { Authorization: `Bearer ${token}` }
+            })
+        );
+        expect(JSON.stringify(result)).not.toContain(token);
+        expect(oauth.save).toHaveBeenCalledWith(
+            '/fake/mcp.json',
+            expect.objectContaining({
+                servers: expect.objectContaining({
+                    'app-baidu-netdisk': expect.objectContaining({ connectorId: 'baidu-netdisk' })
+                })
+            })
+        );
+        manager.getAllStatus.mockResolvedValueOnce([{ name: 'app-baidu-netdisk', status: 'failed', error: token }]);
+        expect(JSON.stringify(await req('servers'))).not.toContain(token);
+        await req(
+            'servers/app-baidu-netdisk',
+            'PUT',
+            { name: 'app-baidu-netdisk', transport: 'sse', url: 'https://fixture.invalid' },
+            400
+        );
+        await req('servers/app-baidu-netdisk', 'DELETE');
+        expect(oauth.clear).toHaveBeenCalledWith('app-baidu-netdisk');
+        expect(oauth.clearPending).toHaveBeenCalledWith('app-baidu-netdisk');
+    });
+
+    it('连接 OAuth 应用时不接受客户端端点或凭证配置，重新授权清除失效数据', async () => {
+        await req('apps/linear/connect', 'POST', { url: 'https://untrusted.invalid' });
+        expect(manager.addServer).toHaveBeenCalledWith({
+            name: 'app-linear',
+            connectorId: 'linear',
+            transport: 'streamableHttp',
+            authType: 'oauth',
+            url: 'https://mcp.linear.app/mcp'
+        });
+        configs.push({
+            name: 'app-linear',
+            connectorId: 'linear',
+            transport: 'streamableHttp',
+            authType: 'oauth',
+            url: 'https://mcp.linear.app/mcp'
+        });
+        await req('servers/app-linear/auth?force=1', 'POST');
+        expect(oauth.clear).toHaveBeenCalledWith('app-linear');
+    });
+});
+
+describe('MCP 自定义 Header 凭证', () => {
+    it('校验请求头，不回显已保存值，空值更新保留旧凭证', async () => {
+        await req(
+            'servers',
+            'POST',
+            {
+                name: 'bad',
+                transport: 'sse',
+                url: 'https://fixture.invalid',
+                headers: { Authorization: 'x\r\nInjected: bad' }
+            },
+            400
+        );
+        configs.push({
+            name: 'headers',
+            transport: 'streamableHttp',
+            url: 'https://fixture.invalid',
+            headers: { Authorization: 'Bearer fixture-secret' }
+        });
+        const listed = await req<Array<{ name: string; headers?: Record<string, string> }>>('servers');
+        expect(listed?.find((item) => item.name === 'headers')?.headers).toEqual({ Authorization: '' });
+        await req('servers/headers', 'PUT', {
+            name: 'headers',
+            transport: 'streamableHttp',
+            url: 'https://fixture.invalid',
+            headers: { Authorization: '' }
+        });
+        expect(manager.updateServer).toHaveBeenCalledWith(
+            'headers',
+            expect.objectContaining({ headers: { Authorization: 'Bearer fixture-secret' } })
+        );
+        await req('servers/headers', 'PUT', {
+            name: 'headers',
+            transport: 'streamableHttp',
+            url: 'https://fixture.invalid',
+            headers: {}
+        });
+        expect(manager.updateServer).toHaveBeenLastCalledWith('headers', expect.objectContaining({ headers: {} }));
     });
 });

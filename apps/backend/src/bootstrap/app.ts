@@ -10,6 +10,7 @@ import {
     createChatRouter,
     createCommandsRouter,
     createConversationsRouter,
+    createConnectorsRouter,
     createDebugRouter,
     createGoalRouter,
     createHealthRouter,
@@ -88,6 +89,14 @@ export function createApp(getServices: () => ServiceContainer | undefined = getC
     app.route(
         '/',
         createMCPRouter(
+            () => getServices()?.mcp,
+            () => getServices()?.mcpConfigPath ?? ''
+        )
+    );
+
+    app.route(
+        '/',
+        createConnectorsRouter(
             () => getServices()?.mcp,
             () => getServices()?.mcpConfigPath ?? ''
         )

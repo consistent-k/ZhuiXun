@@ -22,11 +22,6 @@ const useStyles = createStyles(({ css }) => {
             color: colors['body-strong']
         },
 
-        // 出错且无任何输出的 assistant 消息：不渲染头像/气泡，只保留停止提示以便重试
-        '&.message-item-orphan-notice': {
-            maxWidth: '85%'
-        },
-
         '&.message-item': {
             display: 'flex',
             minWidth: 0,
@@ -111,16 +106,18 @@ const useStyles = createStyles(({ css }) => {
                 marginBottom: -spacing.xs,
                 opacity: 0,
                 pointerEvents: 'none',
-                transition: 'opacity 0.15s ease',
+                transition: 'opacity 0.15s ease'
+            },
 
-                '& .message-item-action-btn': {
-                    color: colors.muted,
-
-                    '&:hover': {
-                        color: colors.body,
-                        background: colors['surface-soft']
-                    }
-                }
+            // 重试与复制、回滚共用紧凑尺寸，避免使用主题默认的 32px 小按钮撑大消息操作。
+            '& .message-item-action-btn': {
+                height: 24,
+                paddingInline: spacing.xs,
+                fontSize: 12,
+                fontWeight: 400,
+                gap: spacing.xxs,
+                color: colors.muted,
+                '&:hover': { color: colors.body, background: colors['surface-soft'] }
             },
 
             '&:hover .message-item-actions, &:focus-within .message-item-actions': {

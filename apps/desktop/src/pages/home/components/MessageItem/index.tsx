@@ -43,6 +43,8 @@ interface MessageRowProps {
     isLast?: boolean;
     /** 会话正在生成（禁用继续 / 重试）；只对最后一条有意义，其余行恒为 false */
     busy?: boolean;
+    /** 只传入最后一条消息的实时生成错误，不修改消息历史。 */
+    error?: Error;
 }
 
 /** assistant 消息 metadata 中与停止提示相关的字段（后端 modules/chat/service.ts 写入） */
@@ -55,7 +57,7 @@ interface StopMeta {
  * 单条消息。用 `memo` 包住：AI SDK 的 `replaceMessage` 只克隆正在流式的那条消息，历史消息对象引用不变，
  * 所以流式更新时只有最后一行真正重渲染。回调一律走 Context（引用恒定），不进入 props。
  */
-export const MessageRow = memo(function MessageRow({ message, streaming, isLast, busy }: MessageRowProps) {
+export const MessageRow = memo(function MessageRow({ message, streaming, isLast, busy, error }: MessageRowProps) {
     const { styles, cx } = useStyles();
     const { message: messageApi } = App.useApp();
     const actions = useChatActions();
@@ -114,11 +116,15 @@ export const MessageRow = memo(function MessageRow({ message, streaming, isLast,
 
     const stop = isUser ? undefined : (message.metadata as StopMeta | undefined);
     // 停止提示只挂在最后一条 assistant 消息上：之后用户已继续对话则不再提示
+    // 错误流不一定带 finish metadata；实时错误与已保存的 stopReason 共用一个入口，避免漏报或重复提示。
+    const reason = isUser ? undefined : error ? 'error' : stop?.stopReason;
     const stopNotice =
-        stop?.stopReason && isLast && !streaming ? (
+        reason && isLast && !streaming ? (
             <LoopGuardNotice
-                reason={stop.stopReason}
-                steps={stop.steps}
+                reason={reason}
+                steps={stop?.steps}
+                error={error}
+                hasOutput={content !== null}
                 onContinue={actions.continueRun}
                 onRetry={actions.regenerate}
                 disabled={busy}
@@ -127,11 +133,7 @@ export const MessageRow = memo(function MessageRow({ message, streaming, isLast,
 
     // 助手消息无任何可见内容且非流式时，renderAssistantParts 返回 null：
     // 整条消息都不渲染，避免留下空的消息容器；出错的空消息仍保留停止提示以便重试。
-    if (!isUser && content === null) {
-        return stopNotice ? (
-            <div className={cx('message-item-orphan-notice', styles.toString())}>{stopNotice}</div>
-        ) : null;
-    }
+    if (!isUser && content === null && !stopNotice) return null;
 
     return (
         <FileTurnContext.Provider value={turnId}>
@@ -160,35 +162,37 @@ export const MessageRow = memo(function MessageRow({ message, streaming, isLast,
                     {stopNotice}
                     {/* 操作条：用户/助手都常驻占位（高度恒定），保证每条消息结构一致、间距均匀；
                     默认隐藏，悬停该条消息时淡入。回滚只对用户消息有意义。 */}
-                    <div className="message-item-actions">
-                        <Button
-                            className="message-item-action-btn"
-                            type="text"
-                            size="small"
-                            icon={<CopyOutlined />}
-                            onClick={handleCopy}
-                        >
-                            复制
-                        </Button>
-                        {isUser && currentConversationId && (
-                            <Popconfirm
-                                title="回滚到此处"
-                                description="将撤销该消息之后的文件改动并截断对话，不可恢复"
-                                okText="回滚"
-                                cancelText="取消"
-                                onConfirm={handleRewind}
+                    {content !== null && (
+                        <div className="message-item-actions">
+                            <Button
+                                className="message-item-action-btn"
+                                type="text"
+                                size="small"
+                                icon={<CopyOutlined />}
+                                onClick={handleCopy}
                             >
-                                <Button
-                                    className="message-item-action-btn"
-                                    type="text"
-                                    size="small"
-                                    icon={<UndoOutlined />}
+                                复制
+                            </Button>
+                            {isUser && currentConversationId && (
+                                <Popconfirm
+                                    title="回滚到此处"
+                                    description="将撤销该消息之后的文件改动并截断对话，不可恢复"
+                                    okText="回滚"
+                                    cancelText="取消"
+                                    onConfirm={handleRewind}
                                 >
-                                    回滚
-                                </Button>
-                            </Popconfirm>
-                        )}
-                    </div>
+                                    <Button
+                                        className="message-item-action-btn"
+                                        type="text"
+                                        size="small"
+                                        icon={<UndoOutlined />}
+                                    >
+                                        回滚
+                                    </Button>
+                                </Popconfirm>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
         </FileTurnContext.Provider>

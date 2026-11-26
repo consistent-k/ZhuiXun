@@ -109,6 +109,7 @@ const overrides: Record<string, string | undefined> = {
     ZHUIXUN_TEST_HOME: sandbox,
     SETTINGS_CONFIG_PATH: path.join(sandbox, 'settings.json'),
     MCP_CONFIG_PATH: path.join(sandbox, '.mcp.json'),
+    CONNECTORS_USER_DIR: path.join(sandbox, 'connectors'),
     MCP_OAUTH_PATH: path.join(sandbox, 'mcp-oauth.json'),
     SESSIONS_USER_DIR: path.join(sandbox, 'sessions'),
     PROJECTS_USER_DIR: path.join(sandbox, 'projects'),

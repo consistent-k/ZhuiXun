@@ -424,6 +424,7 @@ describe('chat runner / approval and step callbacks', () => {
         expect(state.broker.resolveWrite).toHaveBeenNthCalledWith(2, '/project/old.txt', ctx);
         expect(await approval.create_skill()).toBe('user-approval');
         expect(await approval.update_skill()).toBe('user-approval');
+        expect(await approval.connector_cli_tencent_meeting({ args: ['meeting', 'create'] })).toBe('user-approval');
         expect(await approval.WebFetch()).toBe('approved');
         state.webSettings.mockReturnValue({ requireApproval: 'always' });
         expect(await approval.WebFetch()).toBe('user-approval');
@@ -525,6 +526,11 @@ describe('chat runner / approval and step callbacks', () => {
         expect(await subApproval({ toolCall: { toolName: 'Bash', input: { command: 'x' } } })).toMatchObject({
             type: 'denied'
         });
+        expect(
+            await subApproval({
+                toolCall: { toolName: 'connector_cli_tencent_meeting', input: { args: ['meeting', 'list'] } }
+            })
+        ).toMatchObject({ type: 'denied' });
         expect(await subApproval({ toolCall: { toolName: 'Grep', input: {} } })).toBe('not-applicable');
 
         const f = fixture();

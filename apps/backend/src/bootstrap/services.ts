@@ -21,6 +21,7 @@ import {
     subscribeSessionEvents
 } from '@/modules/chat';
 import { createAutomationRunAgent, createChannelRunAgent } from '@/modules/chat/agents/runner';
+import { disposeCliConnectors } from '@/modules/connectors';
 import { getConversationStore } from '@/modules/conversations';
 import { GoalService, setGoalService } from '@/modules/goal';
 import { createJobService, setJobService } from '@/modules/jobs';
@@ -226,6 +227,7 @@ export async function shutdownServices(): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
         await Promise.allSettled([
+            disposeCliConnectors(),
             container?.mcp.disconnectAll() ?? Promise.resolve(),
             channelManager.stopAll(),
             container?.automationScheduler.dispose() ?? Promise.resolve(),

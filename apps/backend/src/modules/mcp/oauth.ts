@@ -12,7 +12,9 @@ import {
     type OAuthClientProvider,
     discoverOAuthServerInfo,
     startAuthorization,
-    exchangeAuthorization
+    exchangeAuthorization,
+    registerClient,
+    type OAuthServerInfo
 } from '@modelcontextprotocol/sdk/client/auth.js';
 import type {
     OAuthClientInformationMixed,
@@ -36,6 +38,7 @@ export interface StoredOAuthData {
     discoveryState?: {
         authorizationServerUrl: string;
         resourceMetadataUrl?: string;
+        authorizationServerMetadata?: OAuthServerInfo['authorizationServerMetadata'];
     };
 }
 
@@ -125,17 +128,12 @@ export class OAuthTokenStore {
         return this.get(serverName).codeVerifier;
     }
 
-    setDiscoveryState(
-        serverName: string,
-        state: { authorizationServerUrl: string; resourceMetadataUrl?: string }
-    ): void {
+    setDiscoveryState(serverName: string, state: NonNullable<StoredOAuthData['discoveryState']>): void {
         this.get(serverName).discoveryState = state;
         this.schedulePersist();
     }
 
-    getDiscoveryState(
-        serverName: string
-    ): { authorizationServerUrl: string; resourceMetadataUrl?: string } | undefined {
+    getDiscoveryState(serverName: string): StoredOAuthData['discoveryState'] {
         return this.get(serverName).discoveryState;
     }
 
@@ -163,8 +161,14 @@ export const tokenStore = {
     getClientInformation: (name: string) => getTokenStore().getClientInformation(name),
     setCodeVerifier: (name: string, v: string) => getTokenStore().setCodeVerifier(name, v),
     getCodeVerifier: (name: string) => getTokenStore().getCodeVerifier(name),
-    setDiscoveryState: (name: string, s: { authorizationServerUrl: string; resourceMetadataUrl?: string }) =>
-        getTokenStore().setDiscoveryState(name, s),
+    setDiscoveryState: (
+        name: string,
+        s: {
+            authorizationServerUrl: string;
+            resourceMetadataUrl?: string;
+            authorizationServerMetadata?: OAuthServerInfo['authorizationServerMetadata'];
+        }
+    ) => getTokenStore().setDiscoveryState(name, s),
     getDiscoveryState: (name: string) => getTokenStore().getDiscoveryState(name),
     clear: (name: string) => getTokenStore().clear(name),
     flush: () => getTokenStore().flush()
@@ -292,7 +296,7 @@ export interface OAuthFlowResult {
 /** 只注入 SDK 与存储边界，离线验证仍执行真实 OAuth 编排；默认入口保留原单例。 */
 export function createOAuthFlow({
     store = tokenStore,
-    sdk = { discoverOAuthServerInfo, startAuthorization, exchangeAuthorization }
+    sdk = { discoverOAuthServerInfo, startAuthorization, exchangeAuthorization, registerClient }
 }: {
     store?: typeof tokenStore;
     sdk?: Pick<
@@ -302,10 +306,10 @@ export function createOAuthFlow({
             exchangeAuthorization: typeof exchangeAuthorization;
         },
         'discoverOAuthServerInfo' | 'startAuthorization' | 'exchangeAuthorization'
-    >;
+    > & { registerClient?: typeof registerClient };
 } = {}) {
     /**
-     * 执行完整的 OAuth 流程（适用于不支持动态注册的服务器，如 GitHub）。
+     * 执行 OAuth 授权码流程，兼容动态注册与预注册客户端。
      *
      * 流程：
      * 1. Discovery OAuth 元数据
@@ -333,23 +337,21 @@ export function createOAuthFlow({
 
         store.setDiscoveryState(serverName, {
             authorizationServerUrl: authServerUrl,
-            resourceMetadataUrl: serverInfo.resourceMetadata?.resource
+            resourceMetadataUrl: serverInfo.resourceMetadata?.resource,
+            ...(metadata ? { authorizationServerMetadata: metadata } : {})
         });
 
         const hasRegistration = !!metadata?.registration_endpoint;
 
-        if (hasRegistration) {
-            // 有 registration_endpoint：使用 SDK 的标准流程
-            // 这种情况下应该用 auth()，但这里不走这个分支
-            throw new Error('此服务器支持动态注册，请使用标准 auth 流程');
-        }
-
-        // 2. 无 registration_endpoint：需要预注册的 client 或使用 public client
-        const resolvedClientId = clientId || 'alias';
-
-        const fakeClientInfo: OAuthClientInformationMixed = {
-            client_id: resolvedClientId
-        };
+        // Linear 等应用使用动态注册；仍走同一 PKCE/state 回调，避免另建无 CSRF 保护的授权通道。
+        const fakeClientInfo: OAuthClientInformationMixed = hasRegistration
+            ? await (sdk.registerClient ?? registerClient)(authServerUrl, { metadata, clientMetadata, scope })
+            : {
+                  client_id: clientId || 'alias',
+                  ...(getConfigForServer(serverName)?.oauth?.clientSecret
+                      ? { client_secret: getConfigForServer(serverName)!.oauth!.clientSecret }
+                      : {})
+              };
 
         // 3. 生成 authorization URL + PKCE
         const { authorizationUrl, codeVerifier } = await sdk.startAuthorization(authServerUrl, {
@@ -358,7 +360,8 @@ export function createOAuthFlow({
             redirectUrl,
             scope,
             // 随机 state 防 CSRF/重放（回调时以此反查 server）
-            state: createOAuthState(serverName)
+            state: createOAuthState(serverName),
+            ...(serverInfo.resourceMetadata?.resource ? { resource: serverInfo.resourceMetadata.resource } : {})
         });
 
         store.setCodeVerifier(serverName, codeVerifier);
@@ -393,7 +396,11 @@ export function createOAuthFlow({
             clientInformation: clientInfo,
             authorizationCode,
             codeVerifier,
-            redirectUri: redirectUrl
+            redirectUri: redirectUrl,
+            ...(discoveryState.authorizationServerMetadata
+                ? { metadata: discoveryState.authorizationServerMetadata }
+                : {}),
+            ...(discoveryState.resourceMetadataUrl ? { resource: discoveryState.resourceMetadataUrl } : {})
         });
 
         store.setTokens(serverName, tokens);
@@ -408,8 +415,11 @@ export function createOAuthFlow({
 export const { startOAuthFlow, completeOAuthFlow } = createOAuthFlow();
 
 // 临时引用，避免循环依赖
-let getConfigForServer: (name: string) => { oauth?: { scope?: string } } | undefined = () => undefined;
+let getConfigForServer: (name: string) => { oauth?: { scope?: string; clientSecret?: string } } | undefined = () =>
+    undefined;
 
-export function setConfigResolver(resolver: (name: string) => { oauth?: { scope?: string } } | undefined): void {
+export function setConfigResolver(
+    resolver: (name: string) => { oauth?: { scope?: string; clientSecret?: string } } | undefined
+): void {
     getConfigForServer = resolver;
 }

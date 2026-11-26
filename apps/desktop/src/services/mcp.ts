@@ -1,3 +1,5 @@
+import type { ConnectorApp } from '@zhuixun/shared';
+
 import type { MCPServerItem, MCPToolItem } from '@/types/mcp';
 import request, { type BaseResponse } from '@/utils/request';
 
@@ -45,6 +47,19 @@ export interface OAuthAuthResponse {
     authenticated?: boolean;
 }
 
-export function startMCPServerAuthApi(name: string): Promise<BaseResponse<OAuthAuthResponse>> {
-    return request.post(`/api/mcp/servers/${encodeURIComponent(name)}/auth`);
+export function startMCPServerAuthApi(name: string, force = false): Promise<BaseResponse<OAuthAuthResponse>> {
+    return request.post(`/api/mcp/servers/${encodeURIComponent(name)}/auth${force ? '?force=1' : ''}`);
+}
+
+/** 获取内置应用目录。 */
+export function fetchConnectorAppsApi(): Promise<BaseResponse<ConnectorApp[]>> {
+    return request.get('/api/mcp/apps');
+}
+
+/** 连接内置应用，凭证仅在本次提交时发送，不随列表返回。 */
+export function connectAppApi(
+    id: string,
+    token?: string
+): Promise<BaseResponse<{ name: string; status: string; error?: string }>> {
+    return request.post(`/api/mcp/apps/${encodeURIComponent(id)}/connect`, { data: { token } });
 }

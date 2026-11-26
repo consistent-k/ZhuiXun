@@ -192,3 +192,25 @@ describe('MCP config real-file round trips', () => {
         await expect(saveMCPConfig(temp.root, cfg)).rejects.toMatchObject({ code: 'EISDIR' });
     });
 });
+
+describe('内置应用配置持久化', () => {
+    it('重启后保留应用来源且凭证配置只允许属主访问', async () => {
+        const temp = await createTempData('connector-config-');
+        try {
+            const file = path.join(temp.root, 'mcp.json');
+            await saveMCPConfig(file, {
+                servers: {
+                    'app-baidu-netdisk': {
+                        connectorId: 'baidu-netdisk',
+                        transport: 'sse',
+                        url: 'https://fixture.invalid?access_token=fixture-token'
+                    }
+                }
+            });
+            expect((await loadMCPConfig(file)).servers['app-baidu-netdisk'].connectorId).toBe('baidu-netdisk');
+            expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+        } finally {
+            await temp.cleanup();
+        }
+    });
+});
